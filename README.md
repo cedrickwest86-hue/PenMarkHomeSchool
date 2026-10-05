@@ -13,11 +13,12 @@ A homeschool planner built around numbered daily lesson plans like Abeka's: less
 | `src/demoData.js` | The sample family used by the demo and home page pictures |
 | `src/Tracker.jsx` | The app |
 | `src/AuthGate.jsx` | Sign-in, family setup, student tablet pairing |
+| `src/CalendarLinks.jsx` | Calendar subscription links (Setup screen) |
 | `src/sync.js` | Saves to the database and keeps devices in sync |
 | `src/platform.js` | Connection settings and the AI connection |
 | `supabase/migrations/` | Database tables and security rules (Supabase applies these from GitHub) |
 | `supabase/config.toml` | Supabase project settings for the GitHub integration |
-| `worker/` | Cloudflare Worker that holds the Anthropic key (Cloudflare deploys it from GitHub) |
+| `worker/` | Cloudflare Worker: AI requests (holds the Anthropic key) and calendar links. Cloudflare deploys it from GitHub |
 | `.github/workflows/deploy.yml` | Builds and publishes the site to GitHub Pages |
 
 ## Run on your own computer (optional)

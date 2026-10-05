@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { supabase, FEATURES } from "./platform.js";
 import { createSupabaseStorage } from "./sync.js";
+import CalendarLinks from "./CalendarLinks.jsx";
 import HomeschoolTracker from "./Tracker.jsx";
 import { BRAND } from "./brand.js";
 import Landing, { Demo, PolicyPage } from "./Landing.jsx";
@@ -190,7 +191,7 @@ function CreateFamily({ onDone }) {
 }
 
 // Shown inside the tracker's Setup tab for teachers
-function FamilyPanel({ membership, onSignOut }) {
+function FamilyPanel({ membership, onSignOut, students = [] }) {
   const [aiOn, setAiOn] = useState(null);
   useEffect(() => { supabase.rpc("can_use_ai").then(({ data }) => setAiOn(data === true)); }, []);
   const [codes, setCodes] = useState({});
@@ -230,7 +231,8 @@ function FamilyPanel({ membership, onSignOut }) {
       {codes.teacher && <CodeBox code={codes.teacher} help="Give this only to another adult. It grants full teacher access." />}
       <Button kind="ghost" className="w-full mb-2" disabled={busy === "teacher"} onClick={() => makeCode("teacher")}>{codes.teacher ? "New co-teacher code" : "Co-teacher code"}</Button>
       {note && <p className="text-sm my-2" style={{ color: C.ink }}>{note}</p>}
-      <p className="text-sm mt-3 mb-2" style={{ color: C.soft }}>AI tools: {!FEATURES.ai ? "off. They haven't been set up for this site yet." : aiOn === null ? "checking…" : aiOn ? "on" : `not turned on for this account yet${BRAND.beta ? " (beta)" : ""}.`}</p>
+      <CalendarLinks students={students} />
+      <p className="text-sm mt-6 mb-2" style={{ color: C.soft }}>AI tools: {!FEATURES.ai ? "off. They haven't been set up for this site yet." : aiOn === null ? "checking…" : aiOn ? "on" : `not turned on for this account yet${BRAND.beta ? " (beta)" : ""}.`}</p>
       <Button kind="ghost" className="w-full" onClick={onSignOut}>Sign out of this device</Button>
     </div>
   );
@@ -331,7 +333,7 @@ export default function AuthGate() {
       <HomeschoolTracker
         key={membership.family_id}
         deviceRole={membership.role}
-        extraSetup={membership.role === "teacher" ? <FamilyPanel membership={membership} onSignOut={signOut} /> : null}
+        extraSetup={membership.role === "teacher" ? (data) => <FamilyPanel membership={membership} onSignOut={signOut} students={data.students} /> : null}
       />
       <SyncBadge status={sync} />
     </>

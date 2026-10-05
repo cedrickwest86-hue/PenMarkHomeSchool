@@ -96,6 +96,23 @@ In the site, **Setup** → *Devices and sign-in* should now say **AI tools: on**
 
 ---
 
+## Calendar reminders on phones, iPads, and computers
+
+School can show up in the calendar app each person already uses, with reminders: the day's work at 7:30 a.m., and a heads-up at 6 p.m. the evening before tests, due dates, and events.
+
+1. In the site: **Setup** → *Calendar on your devices*. Tap **Make link** next to **Whole family** (for you) or a child's name.
+2. **On an iPhone or iPad:** tap **Add to this device** on that device, or scan the code with its Camera. Then tap **Subscribe**.
+   - For reminders: **Settings** → **Calendar** → **Accounts** → **Subscribed Calendars** → pick the calendar → make sure **Remove Alarms** is off.
+3. **Google Calendar on a computer:** **Copy link** → in Google Calendar, **Other calendars** → **+** → **From URL** → paste. Google uses its own reminder settings for the calendar: open its **Settings** and set **All-day event notifications**.
+4. **Outlook:** **Copy link** → **Add calendar** → **Subscribe from web** → paste.
+
+Good to know:
+- Calendar apps check for changes about once an hour (Google can take longer), so a change you make now shows up later.
+- Finished work drops off the calendar.
+- A link shows lessons, tests, due dates, and events only: never grades, notes, answer keys, or photos.
+- If a link gets shared too widely, tap **Make a new link** (the old one stops working) or **Turn off**.
+- Calendar links run on the Cloudflare worker, so they need step 5 done. They don't use AI and cost nothing extra.
+
 ## Make it yours (testing now, selling later)
 
 - **Change the name:** on GitHub, open `src/brand.js`, click the pencil, change `name` (and the tagline if you like), and commit. The home page, sign-in, app header, and browser tab all update in about 2 minutes. `contactEmail` and `company` fill in the footer and policy pages when you're ready.

@@ -3175,7 +3175,7 @@ function StudentsView({ data, onSaveStudent, onRemoveStudent, onSettings, onRest
       </div>
 
       <RewardsSetup data={data} onSettings={onSettings} onRewards={onRewards} onRedeem={onRedeem} />
-      {extraSetup}
+      {typeof extraSetup === "function" ? extraSetup(data) : extraSetup}
       <PinSetup pin={data.settings.pin} onSettings={onSettings} />
       <BackupPanel data={data} onRestore={onRestore} flash={flash} />
       {editing && (
