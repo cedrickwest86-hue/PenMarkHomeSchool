@@ -246,7 +246,8 @@ function Pricing() {
 
 function Faq() {
   const items = [
-    ["Do I have to use Abeka?", "No. It's built around numbered daily lesson plans like Abeka's, and it works with any curriculum you can list by lesson or day. Subjects and schedules are fully editable."],
+    ["Which curricula does it work with?", "Any you can list by lesson or day. When you set up, pick from Abeka, BJU Press, The Good and the Beautiful, Classical Conversations, Sonlight, Master Books, and other popular programs, or type your own, and mix several. Abeka families get Abeka's grading scale and lesson-plan import; everyone else gets a 10-point scale by default. Subjects and schedules are fully editable."],
+    ["We're in Florida with a Step Up For Students scholarship. Does it handle that?", "Yes. Tell it whether you receive PEP or FES-UA and your checklist switches to match: learning plan, yearly test, renewal, and itemized receipts for PEP, instead of the district evaluation that applies to registered home education."],
     ["Do my children need an email or their own account?", "No. You connect a family tablet once with a code. Kids just tap their name."],
     ["Is our information private?", "Each family's information is kept separate and locked to your account. Kids' tablets can't see answer keys or teacher tools. We don't sell your information or show ads."],
     ["How do the AI tools work?", "They're optional helpers for the teacher: suggested grades, practice questions, teaching ideas, and comment drafts. You review everything before your children see it, and kids never chat with an AI."],

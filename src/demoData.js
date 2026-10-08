@@ -79,6 +79,6 @@ export function makeDemoData() {
     checklist: {}, timers: {}, transcripts: {},
     rewards: [{ id: "r1", name: "Pick Friday's dinner", cost: 25 }, { id: "r2", name: "Extra hour of game time", cost: 10 }],
     redemptions: [],
-    settings: { state: "FL", schoolDays: 180, startDate: start, hoursPerDay: 5, pin: "", lessonsPerYear: 170, starsOn: true },
+    settings: { state: "FL", profileDone: true, curricula: ["abeka"], stepUp: "no", schoolDays: 180, startDate: start, hoursPerDay: 5, pin: "", lessonsPerYear: 170, starsOn: true },
   };
 }

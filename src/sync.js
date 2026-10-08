@@ -63,6 +63,22 @@ export function merge3(base, local, remote) {
 const parse = (s) => { try { return JSON.parse(s); } catch { return null; } };
 
 // A drop-in replacement for the window.storage API the tracker was written against.
+// Only a definite "not a member" from the database counts as disconnected. A failed check (phone just woke up,
+// no signal yet, sign-in token still refreshing) never signs anyone out. Confirmed twice, a few seconds apart.
+export async function confirmedRemoved(supabase) {
+  const check = async () => {
+    try {
+      await supabase.auth.getSession(); // refreshes an expired sign-in token first
+      const { data, error } = await supabase.rpc("my_membership");
+      if (error || data == null) return false;
+      return Array.isArray(data) ? data.length === 0 : !data;
+    } catch { return false; }
+  };
+  if (!(await check())) return false;
+  await new Promise((r) => setTimeout(r, 4000));
+  return check();
+}
+
 export function createSupabaseStorage({ supabase, familyId, onStatus = () => {}, onLostAccess = () => {} }) {
   const synced = {};      // key -> { value, version } last agreed with the server
   const pending = {};     // key -> newest local value not yet saved
@@ -119,8 +135,7 @@ export function createSupabaseStorage({ supabase, familyId, onStatus = () => {},
 
   async function poll() {
     try {
-      const { data: me } = await supabase.rpc("my_membership");
-      if (!me || (Array.isArray(me) && !me.length)) { onLostAccess(); return; }
+      if (await confirmedRemoved(supabase)) { onLostAccess(); return; }
       for (const key of Object.keys(listeners)) {
         if (!listeners[key]?.size || key in pending || flushing[key]) continue;
         const { data } = await supabase.from("kv").select("version").eq("family_id", familyId).eq("key", key).maybeSingle();
@@ -159,7 +174,12 @@ export function createSupabaseStorage({ supabase, familyId, onStatus = () => {},
     async set(key, value) {
       const path = fileTarget(key);
       if (path) {
-        const { error } = await supabase.storage.from("family-files").upload(path, new Blob([value], { type: "application/json" }), { upsert: true, contentType: "application/json" });
+        const blob = () => new Blob([value], { type: "application/json" });
+        // New files upload plainly; only an existing file (e.g. during Restore) is overwritten
+        let { error } = await supabase.storage.from("family-files").upload(path, blob(), { upsert: false, contentType: "application/json" });
+        if (error && /exist|duplicate|409/i.test(`${error.message} ${error.statusCode || ""}`)) {
+          ({ error } = await supabase.storage.from("family-files").upload(path, blob(), { upsert: true, contentType: "application/json" }));
+        }
         if (error) throw new Error("The file couldn't be saved. Check your connection and try again.");
         return { key, value };
       }
@@ -187,5 +207,79 @@ export function createSupabaseStorage({ supabase, familyId, onStatus = () => {},
       window.removeEventListener("focus", poll);
       window.removeEventListener("beforeunload", beforeUnload);
     },
+  };
+}
+
+// Comparing data from the database with data in the app: same content, regardless of key order
+export function canonical(v) {
+  if (Array.isArray(v)) return `[${v.map(canonical).join(",")}]`;
+  if (v && typeof v === "object") return `{${Object.keys(v).sort().filter((k) => v[k] !== undefined).map((k) => `${JSON.stringify(k)}:${canonical(v[k])}`).join(",")}}`;
+  return JSON.stringify(v ?? null);
+}
+
+// A device connected with one child's own code. The database only ever sends that child's information
+// (student_view) and only accepts what a child is allowed to change (student_save). Photos use the normal file storage.
+export function createChildStorage({ supabase, familyId, onStatus = () => {}, onLostAccess = () => {} }) {
+  const DATA = "hs-tracker:data";
+  const base = createSupabaseStorage({ supabase, familyId, onStatus, onLostAccess });
+  const listeners = new Set();
+  let last = null;       // canonical form of what the app and database last agreed on
+  let pending = null;    // newest data from the app not yet saved
+  let timer = null, saving = false, failures = 0;
+  const notify = (obj) => { const s = JSON.stringify(obj); listeners.forEach((fn) => { try { fn(s); } catch {} }); };
+  const status = () => onStatus(pending ? (failures ? "offline" : "saving") : "saved");
+
+  async function save() {
+    if (saving || !pending) return;
+    saving = true; status();
+    const sent = pending;
+    try {
+      const { data, error } = await supabase.rpc("student_save", { p: sent });
+      if (error) throw error;
+      if (pending === sent) pending = null;
+      failures = 0;
+      const c = canonical(data);
+      if (c !== canonical(sent)) { last = c; if (!pending) notify(data); } else last = c;
+    } catch {
+      failures++;
+      clearTimeout(timer); timer = setTimeout(save, Math.min(30000, 2000 * failures));
+    } finally { saving = false; status(); }
+  }
+  async function poll() {
+    if (pending || saving || document.visibilityState !== "visible") return;
+    try {
+      if (await confirmedRemoved(supabase)) { onLostAccess(); return; }
+      const { data } = await supabase.rpc("student_view");
+      if (!data || pending || saving) return;
+      const c = canonical(data);
+      if (c !== last) { last = c; notify(data); }
+    } catch {}
+  }
+  const interval = setInterval(poll, 15000);
+  window.addEventListener("focus", poll);
+
+  return {
+    ...base,
+    async get(key) {
+      if (key !== DATA) return base.get(key);
+      const { data, error } = await supabase.rpc("student_view");
+      if (error || !data) return null;
+      last = canonical(data);
+      return { key, value: JSON.stringify(data) };
+    },
+    async set(key, value) {
+      if (key !== DATA) return base.set(key, value);
+      const obj = JSON.parse(value);
+      if (!pending && canonical(obj) === last) return { key, value };
+      pending = obj; status();
+      clearTimeout(timer); timer = setTimeout(save, 700);
+      return { key, value };
+    },
+    subscribe(key, fn) {
+      if (key !== DATA) return base.subscribe(key, fn);
+      listeners.add(fn); return () => listeners.delete(fn);
+    },
+    async flushAll() { clearTimeout(timer); await save(); await base.flushAll(); },
+    dispose() { clearInterval(interval); window.removeEventListener("focus", poll); clearTimeout(timer); base.dispose(); },
   };
 }

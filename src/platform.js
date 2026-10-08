@@ -22,7 +22,7 @@ export async function aiFetch(init = {}) {
     return new Response(JSON.stringify({ type: "error", error: { message: "The AI tools work in your own account, not in the demo." } }), { status: 503 });
   }
   if (!CONFIG.aiUrl || !supabase) {
-    return new Response(JSON.stringify({ type: "error", error: { message: "The AI tools aren't set up yet. See step 3 of the setup guide." } }), { status: 503 });
+    return new Response(JSON.stringify({ type: "error", error: { message: "Photo reading and the other AI tools aren't set up on this site yet. They need the Cloudflare worker (step 5 of the setup guide)." } }), { status: 503 });
   }
   const { data } = await supabase.auth.getSession();
   return fetch(CONFIG.aiUrl, {

@@ -1,4 +1,4 @@
-# Penmark (working name)
+# West Homeschool
 
 A homeschool planner built around numbered daily lesson plans like Abeka's: lesson planning, calendar, grading, student views, reports, and state records. Change the name in `src/brand.js`.
 

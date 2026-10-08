@@ -11,7 +11,7 @@ import {
 const DATA_KEY = "hs-tracker:data";
 const FILE_PREFIX = "hs-file:";
 const KEY_PREFIX = "hs-akey:"; // answer keys: stored where student tablets can't read them
-const MAX_FILE = 3.5 * 1024 * 1024; // base64 grows ~33%; keeps each file under the 5MB storage limit
+const MAX_FILE = 10 * 1024 * 1024; // photos are shrunk automatically; this mainly limits PDFs
 
 const C = {
   paper: "#FBFCFE", rule: "#D6E4F5", margin: "#E9A3A3", ink: "#1B2A4A",
@@ -22,6 +22,10 @@ const GRADES = ["K4", "K5", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "
 const TYPES = ["Lesson", "Seatwork", "Homework", "Reading", "Speed Drill", "Quiz", "Test", "Exam", "Book Report", "Memory Verse", "Review", "Project"];
 
 function subjectsFor(g) {
+  const list = baseSubjects(g);
+  return SCHOOL.bible ? list : list.filter((x) => x !== "Bible");
+}
+function baseSubjects(g) {
   if (g === "K4" || g === "K5") return ["Bible", "Phonics & Reading", "Writing", "Numbers", "Science & Health", "History"];
   const n = parseInt(g, 10);
   if (n <= 3) return ["Bible", "Phonics", "Reading", "Language", "Spelling", "Cursive", "Arithmetic", "Science", "History & Geography", "Health"];
@@ -29,6 +33,65 @@ function subjectsFor(g) {
   if (n <= 8) return ["Bible", "Literature", "Grammar & Composition", "Vocabulary & Spelling", "Math", "Science", "History"];
   return ["Bible", "Literature", "Grammar & Composition", "Vocabulary", "Math", "Science", "History", "Elective"];
 }
+
+/* ---------- school profile: curriculum, grading scale, scholarship ---------- */
+// Widely used homeschool programs (by search popularity and curriculum round-ups). Families can pick several, plus "Other".
+const CURRICULA = [
+  { id: "abeka", name: "Abeka", christian: true },
+  { id: "bju", name: "BJU Press", christian: true },
+  { id: "tgatb", name: "The Good and the Beautiful", christian: true },
+  { id: "cc", name: "Classical Conversations", christian: true },
+  { id: "aop", name: "Alpha Omega (LIFEPAC, Monarch, Horizons)", christian: true },
+  { id: "masterbooks", name: "Master Books", christian: true },
+  { id: "sonlight", name: "Sonlight", christian: true },
+  { id: "mfw", name: "My Father's World", christian: true },
+  { id: "easypeasy", name: "Easy Peasy All-in-One", christian: true },
+  { id: "memoria", name: "Memoria Press", christian: true },
+  { id: "apologia", name: "Apologia", christian: true },
+  { id: "time4learning", name: "Time4Learning" },
+  { id: "bookshark", name: "BookShark" },
+  { id: "saxon", name: "Saxon Math" },
+  { id: "teachingtextbooks", name: "Teaching Textbooks" },
+];
+const SCALES = {
+  abeka: {
+    label: "Abeka (A 94–100, B 85–93, C 77–84, D 70–76)",
+    note: "A 94–100, B 85–93, C 77–84, D 70–76, F below 70",
+    cut: [[99, "A+"], [96, "A"], [94, "A–"], [91, "B+"], [88, "B"], [85, "B–"], [82, "C+"], [79, "C"], [77, "C–"], [74, "D+"], [70, "D"]],
+    nums: [["A+", 100], ["A", 97], ["A–", 95], ["B+", 92], ["B", 90], ["B–", 86], ["C+", 83], ["C", 80], ["C–", 78], ["D+", 75], ["D", 72], ["F", 69]],
+  },
+  ten: {
+    label: "10-point (A 90–100, B 80–89, C 70–79, D 60–69)",
+    note: "A 90–100, B 80–89, C 70–79, D 60–69, F below 60",
+    cut: [[97, "A+"], [93, "A"], [90, "A–"], [87, "B+"], [83, "B"], [80, "B–"], [77, "C+"], [73, "C"], [70, "C–"], [67, "D+"], [60, "D"]],
+    nums: [["A+", 98], ["A", 95], ["A–", 91], ["B+", 88], ["B", 85], ["B–", 81], ["C+", 78], ["C", 75], ["C–", 71], ["D+", 68], ["D", 64], ["F", 55]],
+  },
+};
+const STEP_UP = {
+  no: "No",
+  pep: "Yes: Personalized Education Program (PEP)",
+  fesua: "Yes: FES-UA (Unique Abilities)",
+  unsure: "Yes, but I'm not sure which one",
+};
+const scaleOf = (st = {}) => st.gradeScale || (st.curricula?.length && !st.curricula.includes("abeka") ? "ten" : "abeka");
+function curriculumText(st = {}) {
+  const names = (st.curricula || []).map((id) => CURRICULA.find((c) => c.id === id)?.name).filter(Boolean);
+  if (st.curriculumOther?.trim()) names.push(st.curriculumOther.trim());
+  if (names.length < 2) return names[0] || "";
+  return names.slice(0, -1).join(", ") + " and " + names[names.length - 1];
+}
+// The family's profile, refreshed from settings on every render so grading helpers and prompts can use it.
+let SCHOOL = { scale: "abeka", curriculum: "", abeka: true, bible: true };
+function setSchool(st = {}) {
+  const ids = st.curricula || [];
+  SCHOOL = {
+    scale: scaleOf(st),
+    curriculum: curriculumText(st),
+    abeka: !ids.length || ids.includes("abeka"),
+    bible: !ids.length || ids.some((id) => CURRICULA.find((c) => c.id === id)?.christian) || st.bible === true,
+  };
+}
+const usingText = () => (SCHOOL.curriculum ? `the ${SCHOOL.curriculum} curriculum` : "their homeschool curriculum");
 
 /* ---------- helpers ---------- */
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -54,11 +117,10 @@ const fmtDate = (iso, long) =>
   new Date(iso + "T12:00:00").toLocaleDateString(undefined, long
     ? { weekday: "long", month: "long", day: "numeric" }
     : { weekday: "short", month: "short", day: "numeric" });
-// Abeka Academy grading-period scale
-const SCALE = [[99, "A+"], [96, "A"], [94, "A–"], [91, "B+"], [88, "B"], [85, "B–"], [82, "C+"], [79, "C"], [77, "C–"], [74, "D+"], [70, "D"]];
+// Letter grades follow the family's chosen scale (Abeka's by default)
 function letter(p) {
   if (p == null || Number.isNaN(p)) return "–";
-  const hit = SCALE.find(([min]) => p >= min);
+  const hit = (SCALES[SCHOOL.scale] || SCALES.abeka).cut.find(([min]) => p >= min);
   return hit ? hit[1] : "F";
 }
 // Abeka grading periods: grades 2 and 3 use six (about 30 lessons each), grade 4 uses four. Editable per student.
@@ -247,11 +309,53 @@ async function askClaude(content, extra = {}) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 1000, messages: [{ role: "user", content }], ...extra }),
   });
-  const j = await res.json();
-  if (j.error) throw new Error(j.error.message || "request failed");
+  const j = await res.json().catch(() => ({ error: { message: "The AI service didn't respond. Try again in a minute." } }));
+  if (j.error) {
+    const err = new Error(j.error.message || "request failed");
+    err.setup = [401, 403, 503].includes(res.status); // AI not set up, not turned on, or not signed in
+    throw err;
+  }
   return (j.content || []).map((c) => (c.type === "text" ? c.text : "")).join("\n").trim();
 }
-const fileBlock = async (file) => {
+// Show the real reason when AI isn't available; otherwise the friendly fallback
+const aiReason = (e, fallback) => (e?.setup ? e.message : fallback);
+
+// Phone photos are often 3–12 MB. Shrink them before sending or saving; printed text stays readable.
+const looksLikeImage = (f) => /^image\//.test(f.type) || /\.(heic|heif|jpe?g|png|webp)$/i.test(f.name || "");
+async function decodeImage(file) {
+  if (typeof createImageBitmap !== "undefined") {
+    try { return await createImageBitmap(file); } catch {}
+  }
+  // Fallback: Safari decodes iPhone HEIC photos through an <img> even when createImageBitmap can't
+  const url = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    await new Promise((ok, bad) => { img.onload = ok; img.onerror = bad; img.src = url; });
+    return img;
+  } finally { setTimeout(() => URL.revokeObjectURL(url), 1000); }
+}
+// Phone photos are often 3–12 MB, and iPhones save them as HEIC. Convert to a smaller JPEG; printed text stays readable.
+async function shrinkImage(file, max = 2000) {
+  if (!looksLikeImage(file)) return file;
+  const isJpegish = /^image\/(jpeg|png|webp)$/.test(file.type);
+  try {
+    const pic = await decodeImage(file);
+    const w = pic.width || pic.naturalWidth, h = pic.height || pic.naturalHeight;
+    const scale = Math.min(1, max / Math.max(w, h));
+    if (isJpegish && scale === 1 && file.size <= 1.5 * 1024 * 1024) { pic.close?.(); return file; }
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(w * scale); canvas.height = Math.round(h * scale);
+    canvas.getContext("2d").drawImage(pic, 0, 0, canvas.width, canvas.height);
+    pic.close?.();
+    const blob = await new Promise((r) => canvas.toBlob(r, "image/jpeg", 0.88));
+    return blob ? new File([blob], (file.name || "photo").replace(/\.\w+$/, "") + ".jpg", { type: "image/jpeg" }) : file;
+  } catch {
+    if (!isJpegish) throw new Error(`${file.name} is in a photo format this browser can't open (likely iPhone HEIC). On the iPhone, choose the photo from Safari, or set Settings → Camera → Formats → Most Compatible.`);
+    return file;
+  }
+}
+const fileBlock = async (original) => {
+  const file = original.type === "application/pdf" ? original : await shrinkImage(original, 1600);
   const data = await fileToBase64(file);
   return file.type === "application/pdf"
     ? { type: "document", source: { type: "base64", media_type: "application/pdf", data } }
@@ -272,8 +376,9 @@ const fileToBase64 = (f) => new Promise((res, rej) => {
   r.onerror = () => rej(new Error("That file couldn't be read. Try a different copy."));
   r.readAsDataURL(f);
 });
-async function storeFile(file, prefix = FILE_PREFIX) {
-  if (file.size > MAX_FILE) throw new Error(`${file.name} is over 3.5 MB. Take a smaller photo or split the PDF.`);
+async function storeFile(original, prefix = FILE_PREFIX) {
+  const file = await shrinkImage(original, 2000);
+  if (file.size > MAX_FILE) throw new Error(`${file.name} is over 10 MB. Split the PDF into smaller parts.`);
   const data = await fileToBase64(file);
   const key = prefix + uid();
   await window.storage.set(key, JSON.stringify({ name: file.name, type: file.type, data }), false);
@@ -415,6 +520,7 @@ function Row({ a, student, showStudent, onToggle, onEdit, mode = "teacher" }) {
           <span>{a.type}</span>
           {showStudent && student && <span>{student.name}</span>}
           {turnedIn && <span className="font-semibold" style={{ color: C.ink }}>Turned in</span>}
+          {mode === "teacher" && (a.procedure || a.prep) && <span className="inline-flex items-center gap-1" style={{ color: "#2F6FB0" }} title="Has lesson plan directions"><ListChecks size={13} />Procedure</span>}
           <DueBadge a={a} />
           {a.attachments?.length ? <span className="inline-flex items-center gap-1"><Paperclip size={13} />{a.attachments.length}</span> : null}
         </div>
@@ -430,8 +536,6 @@ function Row({ a, student, showStudent, onToggle, onEdit, mode = "teacher" }) {
 }
 
 /* ---------- grading helpers ---------- */
-// Abeka's letter-to-number conversions
-const LETTER_NUM = [["A+", 100], ["A", 97], ["A–", 95], ["B+", 92], ["B", 90], ["B–", 86], ["C+", 83], ["C", 80], ["C–", 78], ["D+", 75], ["D", 72], ["F", 69]];
 const IMG_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
 async function loadStored(att) {
   const r = await window.storage.get(att.key, false);
@@ -451,10 +555,10 @@ async function aiGrade(a) {
   const workBlocks = (await Promise.all((a.attachments || []).map(toBlock))).filter(Boolean);
   if (!keyBlocks.length) throw new GradeError("Add a photo or PDF of the answer key first.");
   if (!workBlocks.length) throw new GradeError("There's no photo of the student's work to grade yet.");
-  const prompt = `You are helping a homeschool parent grade an Abeka ${a.type.toLowerCase()} for ${a.subject}${a.lesson ? `, lesson ${a.lesson}` : ""}.
+  const prompt = `You are helping a homeschool parent grade ${SCHOOL.curriculum ? `a ${SCHOOL.curriculum}` : "a"} ${a.type.toLowerCase()} for ${a.subject}${a.lesson ? `, lesson ${a.lesson}` : ""}.
 The first set of pages is the ANSWER KEY. The second set is the STUDENT'S WORK.
 Compare each of the student's answers with the key. Use the point values printed on the key when they appear; otherwise weight each question equally so the whole paper is worth 100.
-Abeka grades by subtracting points missed from 100.
+Grade by subtracting points missed from 100.
 If handwriting is unreadable or you can't find an answer, mark it "unclear" and do not deduct for it. The parent will check those.
 Respond with ONLY a JSON object, no prose and no code fences:
 {"pointsMissed": number, "score": number from 0 to 100, "items": [{"q": "question number or label", "student": "what the student wrote", "expected": "the key's answer", "result": "wrong" or "unclear", "points": points deducted}], "summary": "one or two plain sentences for the parent"}
@@ -470,6 +574,7 @@ List only wrong and unclear answers in items, not correct ones.`;
       }),
     });
     const json = await res.json();
+    if (json.error && [401, 403, 503].includes(res.status)) throw new GradeError(json.error.message);
     text = (json.content || []).map((c) => (c.type === "text" ? c.text : "")).join("");
     const j = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1));
     const score = Math.max(0, Math.min(100, Math.round(Number(j.score))));
@@ -482,7 +587,8 @@ List only wrong and unclear answers in items, not correct ones.`;
       })),
       at: Date.now(),
     };
-  } catch {
+  } catch (e) {
+    if (e instanceof GradeError) throw e;
     throw new GradeError("The pages couldn't be compared. Try clearer, straight-on photos, or grade this one by hand.");
   }
 }
@@ -580,6 +686,18 @@ function Editor({ initial, students, allAssignments, onSave, onDelete, onClose, 
       <Field label="What to do">
         <input className={inputCls} style={inputStyle} placeholder="e.g. Seatwork pp. 42–43, oral drill" value={a.title} onChange={(e) => set("title", e.target.value)} />
       </Field>
+      <div className="rounded-xl p-4 mb-4" style={{ background: "#F3F7FC", border: `1.5px solid ${C.rule}` }}>
+        <div className="font-bold" style={{ color: C.ink }}>From the lesson plan</div>
+        <p className="text-xs mb-2" style={{ color: C.soft }}>Only teachers see this. Photo import fills it in from the Preparation and Procedure columns.</p>
+        <Field label="Preparation">
+          <textarea rows={Math.min(8, Math.max(2, (a.prep || "").split("\n").length + 1))} className={inputCls} style={inputStyle}
+            placeholder="What to have ready, e.g. Have PL p. 3 ready" value={a.prep || ""} onChange={(e) => set("prep", e.target.value)} />
+        </Field>
+        <Field label="Procedure">
+          <textarea rows={Math.min(12, Math.max(3, (a.procedure || "").split("\n").length + 1))} className={inputCls} style={inputStyle}
+            placeholder="Step-by-step directions for teaching the lesson" value={a.procedure || ""} onChange={(e) => set("procedure", e.target.value)} />
+        </Field>
+      </div>
 
       <div className="rounded-xl p-4 mb-4" style={{ background: "#FDF6F5", border: `1.5px solid ${C.rule}` }}>
         <div className="font-bold mb-2" style={{ color: C.redpen }}>Grade</div>
@@ -595,7 +713,7 @@ function Editor({ initial, students, allAssignments, onSave, onDelete, onClose, 
           <Field label="Or a letter">
             <select className={inputCls} style={inputStyle} value="" onChange={(e) => { setMissed(""); set("score", Number(e.target.value)); }}>
               <option value="">{a.score != null && a.score !== "" ? letter(Number(a.score)) : "–"}</option>
-              {LETTER_NUM.map(([l, n]) => <option key={l} value={n}>{l} ({n})</option>)}
+              {(SCALES[SCHOOL.scale] || SCALES.abeka).nums.map(([l, n]) => <option key={l} value={n}>{l} ({n})</option>)}
             </select>
           </Field>
         </div>
@@ -781,10 +899,10 @@ function ListView({ data, activeStudents, onToggle, onEdit, onNew, onDeleteMany,
   function exportCSV() {
     const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
     // Same columns the spreadsheet import reads, so an exported log can be re-imported
-    const rows = [["Student", "Lesson", "Subject", "Type", "Assignment", "Date", "Due by", "Score", "Status", "Notes", "Grade"]];
+    const rows = [["Student", "Lesson", "Subject", "Type", "Assignment", "Date", "Due by", "Score", "Status", "Notes", "Grade", "Preparation", "Procedure"]];
     data.assignments.filter((a) => ids.has(a.studentId)).sort((x, y) => x.due.localeCompare(y.due)).forEach((a) => {
       const s = data.students.find((x) => x.id === a.studentId);
-      rows.push([s?.name, a.lesson, a.subject, a.type, a.title, a.due, a.dueBy || "", a.score, a.status === "done" ? "Done" : a.status === "submitted" ? "Turned in" : "", a.notes, s?.grade]);
+      rows.push([s?.name, a.lesson, a.subject, a.type, a.title, a.due, a.dueBy || "", a.score, a.status === "done" ? "Done" : a.status === "submitted" ? "Turned in" : "", a.notes, s?.grade, a.prep || "", a.procedure || ""]);
     });
     const blob = new Blob([rows.map((r) => r.map(esc).join(",")).join("\n")], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
@@ -872,10 +990,9 @@ function PhotoImport({ students, onAdd, onMerge, flash, events = [], settings = 
   const existingFor = (x) => (data?.assignments || []).find((a) => a.studentId === student.id && a.subject === x.subject && a.lesson && a.lesson === x.lesson && a.type === x.type && a.status !== "done");
 
   function pick(e) {
-    const ok = ["image/jpeg", "image/png", "image/gif", "image/webp", "application/pdf"];
-    const list = [...e.target.files].filter((f) => ok.includes(f.type)).slice(0, 12);
+    const list = [...e.target.files].filter((f) => f.type === "application/pdf" || looksLikeImage(f)).slice(0, 12);
     e.target.value = "";
-    if (!list.length) { setError("Use JPG, PNG, WEBP, or PDF files."); return; }
+    if (!list.length) { setError("Use photos or PDF files."); return; }
     setFiles(list); setItems(null); setError("");
   }
 
@@ -884,12 +1001,14 @@ function PhotoImport({ students, onAdd, onMerge, flash, events = [], settings = 
     for (let p = 0; p < files.length; p++) {
       setBusy(`Reading page ${p + 1} of ${files.length}…`);
       try {
-        const text = await askClaude([await fileBlock(files[p]), { type: "text", text: `This is a page from an Abeka homeschool resource for a grade ${student.grade} student: most likely the Curriculum Lesson Plans (a teacher/parent book organized by numbered lessons), or a daily schedule, assignment sheet, or workbook page.
+        const text = await askClaude([await fileBlock(files[p]), { type: "text", text: `This is a page from a homeschool resource (${SCHOOL.curriculum || "curriculum not specified"}) for a grade ${student.grade} student: most likely the Curriculum Lesson Plans (a teacher/parent book organized by numbered lessons), or a daily schedule, assignment sheet, or workbook page.
 The student's subjects are: ${student.subjects.join(", ")}.
-Extract every assignment a parent would need to track, including quizzes, tests, exams, book reports, and homework, with their numbers (for example "Quiz 7" or "Test 3").
+If it is an Abeka lesson plan, it is a table with three columns: the subject, "Preparation" (what the student works on and what to have ready), and "Procedure" (step-by-step directions for the teacher).
+Extract one item per subject row that has student work, including quizzes, tests, exams, book reports, seatwork, and homework, with their numbers (for example "Quiz 7" or "Test 3").
+Skip rows with only teacher notes and no student work (for example Classroom Routines, Reading Circle, or Activity Time before it begins). Skip anything cut off at the edge of the photo that you can't read.
 Respond with ONLY a JSON array, no prose:
-[{"subject": the closest match from the student's subjects, "lesson": the Abeka lesson number printed on the page for this assignment as an integer, or null if none is shown, "type": one of ${JSON.stringify(TYPES)}, "title": a short plain description with page numbers if shown, "day": 0-based index of the day within this page if it covers several days and shows no lesson numbers, otherwise 0}]
-If nothing on the page is an assignment, return [].` }]);
+[{"subject": the closest match from the student's subjects, "lesson": the lesson number the row belongs to (from the "Lesson N" banner above it) as an integer, or null if none is shown, "type": one of ${JSON.stringify(TYPES)}, "title": a short plain description of the student's work with book and page, like "Phonics and Language 2 p. 3", "prep": the Preparation column for this row as plain text, one item per line, "procedure": the Procedure column for this row as plain text, one step per line (leave out "Play Video"), "day": 0-based index of the day within this page if it covers several days and shows no lesson numbers, otherwise 0}]
+Copy the wording faithfully; don't add anything that isn't on the page. If nothing on the page is an assignment, return [].` }], { max_tokens: 4000 });
         const parsed = parseJSONLoose(text);
         for (const x of Array.isArray(parsed) ? parsed : []) {
           const subject = student.subjects.includes(x.subject) ? x.subject : matchSubject(x.subject, student.subjects) || student.subjects[0];
@@ -898,12 +1017,15 @@ If nothing on the page is an assignment, return [].` }]);
             lesson: Number.isInteger(x.lesson) && x.lesson > 0 ? x.lesson : null,
             type: TYPES.includes(x.type) ? x.type : matchType(x.type),
             title: String(x.title || "").slice(0, 200),
+            prep: String(x.prep || "").slice(0, 2000),
+            procedure: String(x.procedure || "").slice(0, 3000),
             day: Number.isInteger(x.day) && x.day >= 0 ? x.day : 0,
           };
           item.pick = true;
           all.push(item);
         }
-      } catch {
+      } catch (e) {
+        if (e?.setup) { setError(e.message); break; }
         setError(`Page ${p + 1} couldn't be read. Try a straight-on, well-lit photo of it.`);
       }
     }
@@ -927,8 +1049,9 @@ If nothing on the page is an assignment, return [].` }]);
     for (const x of chosen) {
       const ex = existingFor(x);
       const att = pageAtt[x.page] ? [pageAtt[x.page]] : [];
-      if (ex) updates.push({ id: ex.id, title: x.title || ex.title, attachments: [...(ex.attachments || []), ...att] });
-      else adds.push({ id: uid(), studentId: student.id, subject: x.subject, lesson: x.lesson, type: x.type, title: x.title, due: dateFor(x), status: "todo", score: null, notes: "", attachments: att, createdAt: now });
+      const plan = { ...(x.prep ? { prep: x.prep } : {}), ...(x.procedure ? { procedure: x.procedure } : {}) };
+      if (ex) updates.push({ id: ex.id, title: x.title || ex.title, ...plan, attachments: [...(ex.attachments || []), ...att] });
+      else adds.push({ id: uid(), studentId: student.id, subject: x.subject, lesson: x.lesson, type: x.type, title: x.title, ...plan, due: dateFor(x), status: "todo", score: null, notes: "", attachments: att, createdAt: now });
     }
     onMerge(adds, updates);
     setBusy(""); setItems(null); setFiles([]);
@@ -941,7 +1064,7 @@ If nothing on the page is an assignment, return [].` }]);
   return (
     <div>
       <p className="mb-4 leading-relaxed" style={{ color: C.ink }}>
-        Photograph pages from your Abeka Curriculum Lesson Plans (or any assignment page), up to 12 at a time. Each assignment is placed on the school day that matches its lesson number, and lessons you've already planned get the page details filled in.
+        Photograph pages from your lesson plan book (Abeka Curriculum Lesson Plans, a teacher guide, a schedule, or any assignment page), up to 12 at a time. Each assignment is placed on the school day that matches its lesson number, and lessons you've already planned get the page details filled in.
       </p>
       <div className="grid grid-cols-2 gap-3">
         <Field label="Student">
@@ -1026,6 +1149,8 @@ const HEADERS = {
   score: ["score", "percent", "points", "numericgrade"],
   status: ["status", "done", "complete", "completed"],
   notes: ["notes", "note", "comments"],
+  prep: ["preparation", "prep"],
+  procedure: ["procedure", "teachernotes", "directions"],
 };
 const norm = (v) => String(v ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
 const SUBJECT_ALTS = { math: "arith", arithmetic: "math", english: "language", language: "english", grammar: "language", handwriting: "penmanship", cursive: "penmanship", penmanship: "cursive", phonics: "phonics", geography: "history" };
@@ -1091,6 +1216,7 @@ function buildRows(raw, students, fallbackId, startDate, events = []) {
       score: Number.isFinite(scoreNum) ? Math.max(0, Math.min(100, scoreNum)) : null,
       status: /^(done|yes|y|x|complete|completed|true|1|✓)$/i.test(get("status")) ? "done" : /^(turned ?in|submitted)$/i.test(get("status")) ? "submitted" : "todo",
       notes: get("notes"),
+      prep: get("prep"), procedure: get("procedure"),
       dueBy: dueByGiven && dueByGiven > due ? dueByGiven : null,
     };
   });
@@ -1143,7 +1269,9 @@ function downloadTemplate() {
     ["Due by", "Optional. A later deadline for work that takes several days, like a book report or project."],
     ["Score", "Optional percent, 0–100."],
     ["Status", "Optional. Type Done for finished work."],
-    ["Notes", "Optional."],
+    ["Notes", "Optional. Your child can see these."],
+    ["Preparation", "Optional. The lesson plan's Preparation column. Only teachers see it."],
+    ["Procedure", "Optional. The lesson plan's Procedure column. Only teachers see it."],
   ]);
   how["!cols"] = [{ wch: 12 }, { wch: 110 }];
   XLSX.utils.book_append_sheet(wb, how, "How to use");
@@ -1191,7 +1319,7 @@ function SheetImport({ students, settings, onSettings, onAdd, flash, events }) {
     chosen.forEach((r) => { if (r.newSubject) (newSubjects[r.studentId] ||= new Set()).add(r.subject); });
     onAdd(chosen.map((r) => ({
       id: uid(), studentId: r.studentId, subject: r.subject, lesson: r.lesson, type: r.type,
-      title: r.title || `${r.subject} lesson ${r.lesson}`, due: r.due, dueBy: r.dueBy, status: r.status, score: r.score,
+      title: r.title || `${r.subject} lesson ${r.lesson}`, ...(r.prep ? { prep: r.prep } : {}), ...(r.procedure ? { procedure: r.procedure } : {}), due: r.due, dueBy: r.dueBy, status: r.status, score: r.score,
       notes: r.notes, attachments: [], createdAt: now,
     })), Object.fromEntries(Object.entries(newSubjects).map(([k, v]) => [k, [...v]])));
     setRaw(null); setRows(null); setSource("");
@@ -1350,7 +1478,7 @@ Respond with ONLY JSON: {"units": [{"title": "short unit title", "startPage": nu
       if (!units.length) throw new Error();
       setPlan(expandUnits(units, n));
       setNote(String(j.note || ""));
-    } catch { setErr("The plan couldn't be built. Check the book title, or try clearer photos of the contents."); }
+    } catch (e) { setErr(aiReason(e, "The plan couldn't be built. Check the book title, or try clearer photos of the contents.")); }
     setBusy(false);
   }
   function add() {
@@ -1494,7 +1622,8 @@ function PlanLessons({ data, students, onAdd, onReplace, onUpdateStudent }) {
 }
 
 function ImportView(props) {
-  const [mode, setMode] = useState("plan");
+  const ownMode = useState("plan");
+  const [mode, setMode] = props.sub || ownMode;
   const modes = [["plan", "Plan lessons", CalendarDays], ["sheet", "Spreadsheet", FileSpreadsheet], ["photo", "Photo", Camera]];
   const events = props.data.events || [];
   return (
@@ -1604,6 +1733,19 @@ function schoolYearKey(startDate) {
   return `${y}–${String((y + 1) % 100).padStart(2, "0")}`;
 }
 
+// Step Up For Students: Personalized Education Program (PEP), 2026–27 handbook and FLDOE PEP FAQs
+const PEP_ITEMS = [
+  ["pep-noi", "Home education notice closed", "PEP students are not registered home education students. If your child was registered with the district, file a written notice of termination and tell the district your child is on PEP."],
+  ["pep-slp", "Student Learning Plan", "Submit it in your Step Up account (EMA) before your child starts and before each renewal; for the 2026–27 year the deadline was May 31. Update it at least once a year."],
+  ["pep-test", "Yearly test", "A nationally norm-referenced test from Florida's approved list, or the statewide assessment through your school district. Send the results to Step Up before you renew."],
+  ["pep-renew", "Renew and sign the parent agreement", "Renew each year (the 2026–27 window was February 1 to April 30) and sign the annual agreement with Step Up."],
+  ["pep-receipts", "Itemized receipts", "Keep receipts showing base cost, tax, fees, and total for every purchase. Reimbursement requests for this school year are due by July 31. Handwritten receipts aren't accepted."],
+];
+const FESUA_ITEMS = [
+  ["fesua-receipts", "Step Up receipts", "Keep itemized receipts for scholarship purchases and submit reimbursements by Step Up's deadline."],
+  ["fesua-renew", "Renew the scholarship", "Renew with Step Up each year and keep your child's documentation current."],
+];
+
 function Compliance({ data, activeStudents, onCheck }) {
   const st = STATES.find((x) => x.code === data.settings.state);
   if (!st) {
@@ -1616,19 +1758,30 @@ function Compliance({ data, activeStudents, onCheck }) {
   const year = schoolYearKey(data.settings.startDate);
   const hpd = data.settings.hoursPerDay || 5;
   const checks = data.checklist?.[year] || {};
-  const items = [
+  const su = st.code === "FL" ? data.settings.stepUp || "" : "";
+  const pep = su === "pep";
+  const homeEd = [
     !/^None required/.test(st.n) && ["notice", "Notice or filing", st.n],
     !/^Not required/.test(st.a) && ["assess", "Assessment", st.a],
     !/^None required/.test(st.r) && ["records", "Records to keep", st.r],
   ].filter(Boolean);
+  const items = pep ? PEP_ITEMS : su === "fesua" ? [...homeEd, ...FESUA_ITEMS] : homeEd;
   return (
     <section className="mb-8 pb-6 border-b-2" style={{ borderColor: C.ink }}>
       <div className="flex items-baseline justify-between gap-2 mb-2">
-        <h3 className="text-xl font-bold" style={{ color: C.ink }}>{st.name} requirements</h3>
+        <h3 className="text-xl font-bold" style={{ color: C.ink }}>{pep ? "Step Up PEP requirements" : `${st.name} requirements`}</h3>
         <span className="text-sm flex-shrink-0" style={{ color: C.soft }}>{year}</span>
       </div>
-      <p className="mb-3 leading-relaxed" style={{ color: C.ink }}><span className="font-semibold">Instruction time:</span> {st.t}</p>
-      {(st.d || st.h) && activeStudents.map((s) => {
+      {su && su !== "no" && (
+        <div className="mb-3 rounded-lg p-3 text-sm leading-relaxed" style={{ background: "#F3F7FC", color: C.ink }}>
+          {pep && <>You receive the <strong>Personalized Education Program</strong> scholarship. PEP students are not registered home education students, so the district notice, portfolio review, and annual evaluation don't apply. Step Up's learning plan, yearly test, and receipt rules do.</>}
+          {su === "fesua" && <>You receive <strong>FES-UA</strong> (Unique Abilities). If your child is also registered with the district as a home education student, the Florida home education rules below still apply, along with Step Up's rules for spending and renewal. Your FES-UA handbook has the details for your child.</>}
+          {su === "unsure" && <>PEP and FES-UA have different rules. Your scholarship type is shown in your Step Up account (EMA). Choose it in Setup and this checklist will match. Until then, the Florida home education rules are shown.</>}
+          {" "}<a href={pep || su === "unsure" ? "https://www.stepupforstudents.org/?p=67751" : "https://www.stepupforstudents.org/"} target="_blank" rel="noopener noreferrer" className="underline font-semibold">{pep || su === "unsure" ? "PEP Family Handbook" : "Step Up For Students"}</a>
+        </div>
+      )}
+      {!pep && <p className="mb-3 leading-relaxed" style={{ color: C.ink }}><span className="font-semibold">Instruction time:</span> {st.t}</p>}
+      {!pep && (st.d || st.h) && activeStudents.map((s) => {
         const days = attendanceDays(data, s.id).length;
         const logged = Math.round(minutesLogged(data, s.id) / 6) / 10;
         return (
@@ -1643,7 +1796,7 @@ function Compliance({ data, activeStudents, onCheck }) {
       })}
       {st.h && !st.d && <p className="text-sm mb-3" style={{ color: C.soft }}>Hours are estimated at {hpd} per marked school day. Change that in Setup.</p>}
 
-      {st.s.length > 0 && (
+      {!pep && st.s.length > 0 && (
         <div className="mb-4">
           <div className="font-semibold" style={{ color: C.ink }}>Required subjects</div>
           <p className="text-sm mb-2" style={{ color: C.soft }}>{st.s.join(", ")}</p>
@@ -1669,6 +1822,7 @@ function Compliance({ data, activeStudents, onCheck }) {
         </label>
       ))}
       <p className="text-sm mt-3 leading-relaxed" style={{ color: C.soft }}>
+        {pep && <>Dates are from Step Up's 2026–27 PEP Family Handbook; check your EMA account each year. </>}
         A plain-language summary of the most common homeschool option, not legal advice. Laws change, and many states offer more than one option.{" "}
         <a href={`https://hslda.org/legal/${stateSlug(st.name)}`} target="_blank" rel="noopener noreferrer" className="underline" style={{ color: C.ink }}>Read the full {st.name} summary</a>
       </p>
@@ -1807,7 +1961,7 @@ function StudentApp({ data, student, onToggle, onAttach, onSwitch, flash, onAddR
       <header style={{ ...ruled, borderBottom: `2px solid ${C.ink}` }}>
         <div className="max-w-2xl mx-auto pl-8 pr-4 pt-5 pb-4 flex items-center justify-between gap-3">
           <h1 className="text-2xl font-bold" style={{ color: C.ink }}>Hi, {student.name}</h1>
-          <button onClick={onSwitch} className="text-sm font-semibold underline focus:outline-none focus:ring-2 rounded" style={{ color: C.ink }}>Switch user</button>
+          {onSwitch && <button onClick={onSwitch} className="text-sm font-semibold underline focus:outline-none focus:ring-2 rounded" style={{ color: C.ink }}>Switch user</button>}
         </div>
       </header>
       <main className="max-w-2xl mx-auto px-4 pt-5">
@@ -1934,7 +2088,7 @@ function ProgressView({ data, activeStudents }) {
           </section>
         );
       })}
-      <p className="text-sm" style={{ color: C.soft }}>Letters follow the Abeka Academy scale: A 94–100, B 85–93, C 77–84, D 70–76, F below 70. Grading periods follow lesson numbers: six of about 30 lessons (grades K–3) or four of about 45 (grade 4 and up). Change a child’s count in Setup. Each tick on a bar marks 10 lessons.</p>
+      <p className="text-sm" style={{ color: C.soft }}>Letters follow the {SCHOOL.scale === "abeka" ? "Abeka Academy" : "10-point"} scale: {SCALES[SCHOOL.scale].note}. Change it in Setup. Grading periods follow lesson numbers: six of about 30 lessons (grades K–3) or four of about 45 (grade 4 and up). Change a child’s count in Setup. Each tick on a bar marks 10 lessons.</p>
     </div>
   );
 }
@@ -1976,7 +2130,7 @@ function reportCardHTML(data, s, period, comments) {
 <p><strong>Overall average:</strong> <span class="grade">${overall != null ? `${overall}% ${letter(overall)}` : "–"}</span></p>
 <p><strong>School days attended this year:</strong> ${attendanceDays(data, s.id).length}</p>
 ${comments ? `<h2>Teacher comments</h2><p>${esc(comments).replace(/\n/g, "<br>")}</p>` : ""}
-<p class="note">Grading scale (Abeka): A 94–100, B 85–93, C 77–84, D 70–76, F below 70.</p>
+<p class="note">Grading scale${SCHOOL.scale === "abeka" ? " (Abeka)" : ""}: ${SCALES[SCHOOL.scale].note}.</p>
 <div class="sig"><div>Teacher</div><div>Date</div></div>
 </body></html>`;
 }
@@ -2026,7 +2180,7 @@ async function portfolioHTML(data, s, perSubject, withPhotos) {
 
   return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(s.name)} portfolio</title><style>${PRINT_CSS}</style></head><body>
 <h1>${esc(s.name)}: Home education portfolio</h1>
-<p class="meta">Grade ${esc(s.grade)}, ${esc(schoolYearKey(data.settings.startDate))} school year${st ? `, ${esc(st.name)}` : ""}. Curriculum: Abeka. Prepared ${esc(fmtDate(today, true))}.</p>
+<p class="meta">Grade ${esc(s.grade)}, ${esc(schoolYearKey(data.settings.startDate))} school year${st ? `, ${esc(st.name)}` : ""}${SCHOOL.curriculum ? `. Curriculum: ${esc(SCHOOL.curriculum)}` : ""}. Prepared ${esc(fmtDate(today, true))}.</p>
 ${st?.code === "FL" ? `<p class="note">Organized for Florida's portfolio requirement (s. 1002.41, F.S.): a log of educational activities kept as instruction happened, the titles of reading materials used, and samples of the student's work.</p>` : ""}
 <h2>Attendance</h2><p>${days.length} school days${days.length ? `, from ${esc(days[0])} to ${esc(days[days.length - 1])}` : ""}.${hours ? ` ${hours} hours of timed work and activities logged.` : ""}</p>
 <h2>Subjects</h2><table><thead><tr><th>Subject</th><th>Lessons completed</th><th>Average</th></tr></thead><tbody>${summary}</tbody></table>
@@ -2111,7 +2265,7 @@ function ReportsPanel({ data, students, flash, onSaveTranscript }) {
     setDrafting(true);
     try {
       setComments(await askClaude(`Write report card comments from a homeschool parent-teacher about their child, for ${period ? `grading period ${period}` : "the school year so far"}. Facts:\n${studentFacts(data, s, period)}\n\nWrite three or four warm, honest, specific sentences in the parent's voice: name one real strength, one area to work on, and close with encouragement. Use only these facts and don't invent details. Plain text only.`));
-    } catch { flash("The comments couldn't be drafted. Try again."); }
+    } catch (e) { flash(aiReason(e, "The comments couldn't be drafted. Try again.")); }
     setDrafting(false);
   }
   return (
@@ -2165,8 +2319,9 @@ function ReportsPanel({ data, students, flash, onSaveTranscript }) {
   );
 }
 
-function RecordsView({ data, activeStudents, onCheck, onAddReading, onRemoveReading, flash, onAdd, onToggle, onEdit, onSaveTranscript }) {
-  const [view, setView] = useState("grades");
+function RecordsView({ data, activeStudents, onCheck, onAddReading, onRemoveReading, flash, onAdd, onToggle, onEdit, onSaveTranscript, sub }) {
+  const ownView = useState("grades");
+  const [view, setView] = sub || ownView;
   const views = [["grades", "Grades"], ["reading", "Reading"], ["verses", "Verses"], ["reports", "Reports"]];
   return (
     <div>
@@ -2653,8 +2808,9 @@ function PrintSheet({ data, students, day, onClose }) {
   );
 }
 
-function CalendarTab({ data, activeStudents, onToggle, onEdit, onNew, onAddEvent, onEditEvent, onOpenDay, onSync, onPrint, onDeleteMany, onDoneMany }) {
-  const [view, setView] = useState("month");
+function CalendarTab({ data, activeStudents, onToggle, onEdit, onNew, onAddEvent, onEditEvent, onOpenDay, onSync, onPrint, onDeleteMany, onDoneMany, sub }) {
+  const ownView = useState("month");
+  const [view, setView] = sub || ownView;
   const sids = activeStudents.map((s) => s.id);
   return (
     <div>
@@ -2762,10 +2918,10 @@ function TeacherAI({ a, setA, student }) {
   async function tips() {
     setBusy("tips"); setErr("");
     try {
-      const t = await askClaude(`I'm a homeschool parent teaching a grade ${grade} student with the Abeka curriculum. Today's work is ${where}: "${a.title || a.type}".${a.notes ? ` My notes: ${a.notes}.` : ""}
+      const t = await askClaude(`I'm a homeschool parent teaching a grade ${grade} student with ${usingText()}. Today's work is ${where}: "${a.title || a.type}".${a.notes ? ` My notes: ${a.notes}.` : ""}
 In under 180 words, give me three short labeled parts: "Explain:" a simple way to teach the key idea, "Example:" one concrete example, and "Practice:" a quick 5-minute activity or game. Plain text, no markdown symbols.`);
       setA((p) => ({ ...p, tips: t }));
-    } catch { setErr("The teaching ideas couldn't be written. Try again."); }
+    } catch (e) { setErr(aiReason(e, "The teaching ideas couldn't be written. Try again.")); }
     setBusy("");
   }
   async function practice() {
@@ -2773,7 +2929,7 @@ In under 180 words, give me three short labeled parts: "Explain:" a simple way t
     try {
       const blocks = [];
       for (const f of pages) blocks.push(await fileBlock(f));
-      const text = await askClaude([...blocks, { type: "text", text: `Write ${count} multiple-choice review questions for a grade ${grade} homeschool student using the Abeka curriculum, for ${where}. Topic: ${topic || a.title || a.subject}.
+      const text = await askClaude([...blocks, { type: "text", text: `Write ${count} multiple-choice review questions for a grade ${grade} homeschool student using ${usingText()}, for ${where}. Topic: ${topic || a.title || a.subject}.
 ${blocks.length ? "Base every question only on the attached study pages." : `Stick to what a grade ${grade} student would have been taught on this topic.`}
 Give four choices each with exactly one correct answer, worded at a grade ${grade} reading level. For Bible questions, use the King James Version.
 Respond with ONLY a JSON array, no prose: [{"q": "question", "choices": ["", "", "", ""], "answer": index of the correct choice, "why": "one short sentence explaining the answer"}]` }]);
@@ -2781,7 +2937,7 @@ Respond with ONLY a JSON array, no prose: [{"q": "question", "choices": ["", "",
         .map((q) => ({ q: q.q, choices: q.choices.map(String), answer: q.answer, why: String(q.why || "") }));
       if (!qs.length) throw new Error();
       setA((p) => ({ ...p, practice: qs }));
-    } catch { setErr("The practice questions couldn't be made. Try a clearer photo or a more specific topic."); }
+    } catch (e) { setErr(aiReason(e, "The practice questions couldn't be made. Try a clearer photo or a more specific topic.")); }
     setBusy("");
   }
   const log = a.practiceLog || [];
@@ -2844,7 +3000,7 @@ function VersesPanel({ data, students, onAdd, onToggle, onEdit, flash }) {
   const verses = data.assignments.filter((a) => a.type === "Memory Verse" && sids.includes(a.studentId)).sort((x, y) => dueOf(y).localeCompare(dueOf(x)));
   async function fill() {
     setBusy(true);
-    try { setText(await kjvText(ref)); } catch { flash("That reference couldn't be looked up. Check the spelling, like Isaiah 53:1-6."); }
+    try { setText(await kjvText(ref)); } catch (e) { flash(aiReason(e, "That reference couldn't be looked up. Check the spelling, like Isaiah 53:1-6.")); }
     setBusy(false);
   }
   function add() {
@@ -2904,7 +3060,7 @@ function transcriptHTML(data, s, rows) {
 <h1>Official high school transcript</h1>
 <p class="meta">Home education program${st ? `, ${esc(st.name)}` : ""}</p>
 <table><tbody><tr><th>Student</th><td>${esc(s.name)}</td><th>Birthdate</th><td>__________</td></tr>
-<tr><th>Curriculum</th><td>Abeka</td><th>Graduation date</th><td>__________</td></tr></tbody></table>
+<tr><th>Curriculum</th><td>${esc(SCHOOL.curriculum || "Home education")}</td><th>Graduation date</th><td>__________</td></tr></tbody></table>
 ${years.map((y) => {
   const yr = rows.filter((r) => r.year === y);
   return `<h2>${esc(y)}</h2><table><thead><tr><th>Course</th><th>Credits</th><th>Final grade</th><th>Letter</th></tr></thead><tbody>
@@ -2987,7 +3143,7 @@ function WeeklySummary({ data, students }) {
     setBusy(true); setErr("");
     try {
       setText(await askClaude(`You're helping a homeschool parent review the week (today is ${fmtDate(todayISO(), true)}). For each child below, write two or three plain sentences: what got done, anything overdue or scored low, and what's coming up. Then end with one line starting "Next week:" with a practical suggestion. Use only these facts and don't invent anything. Plain text, no markdown symbols.\n\n${students.map((s) => weekFacts(data, s)).join("\n\n")}`));
-    } catch { setErr("The summary couldn't be written. Try again."); }
+    } catch (e) { setErr(aiReason(e, "The summary couldn't be written. Try again.")); }
     setBusy(false);
   }
   return (
@@ -3004,6 +3160,7 @@ function WeeklySummary({ data, students }) {
 /* ---------- stars & rewards ---------- */
 function StarsCard({ data, student }) {
   const { balance } = starsFor(data, student.id);
+  const recent = (data.redemptions || []).filter((r) => r.studentId === student.id).slice(-3).reverse();
   const rewards = [...(data.rewards || [])].sort((x, y) => x.cost - y.cost);
   return (
     <section className="mb-8 rounded-xl p-4" style={{ background: "#FFF6D6", border: `1.5px solid ${C.pencil}` }}>
@@ -3016,10 +3173,55 @@ function StarsCard({ data, student }) {
         </div>
       ))}
       {!rewards.length && <p className="text-sm" style={{ color: C.soft }}>Ask your teacher what you're saving up for.</p>}
+      {recent.length > 0 && (
+        <div className="mt-3 pt-2 border-t" style={{ borderColor: C.pencil }}>
+          {recent.map((r) => (
+            <div key={r.id} className="text-sm py-0.5" style={{ color: C.ink }}>
+              <span className="font-bold" style={{ color: r.cost > 0 ? C.redpen : "#2F7D4F" }}>{r.cost > 0 ? `−${r.cost}` : `+${-r.cost}`}</span> {r.name}
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   );
 }
-function RewardsSetup({ data, onSettings, onRewards, onRedeem }) {
+// Give or take away stars, with an optional reason the child can see, plus recent history with undo
+function StarAdjust({ data, student, balance, onRedeem, onUndo }) {
+  const [n, setN] = useState(1);
+  const [why, setWhy] = useState("");
+  const history = (data.redemptions || []).filter((r) => r.studentId === student.id).slice(-5).reverse();
+  const go = (sign) => {
+    const amt = sign > 0 ? n : Math.min(n, Math.max(0, balance));
+    if (!amt) return;
+    onRedeem(student.id, { name: why.trim() || (sign > 0 ? "Bonus stars" : "Stars taken away"), cost: -sign * amt, kind: sign > 0 ? "add" : "take" });
+    setWhy(""); setN(1);
+  };
+  return (
+    <div className="mt-2">
+      <div className="flex gap-2 items-center">
+        <input aria-label={`Stars for ${student.name}`} type="number" min="1" max="50" inputMode="numeric" className={inputCls} style={{ ...inputStyle, width: 64 }}
+          value={n} onChange={(e) => setN(Math.max(1, Math.min(50, Number(e.target.value) || 1)))} />
+        <input aria-label="Reason (optional)" className={`${inputCls} flex-1`} style={inputStyle} placeholder="Reason (optional)" value={why} onChange={(e) => setWhy(e.target.value)} />
+      </div>
+      <div className="grid grid-cols-2 gap-2 mt-2">
+        <Btn kind="ghost" onClick={() => go(1)}>+ Give {n === 1 ? "star" : "stars"}</Btn>
+        <Btn kind="danger" disabled={balance <= 0} onClick={() => go(-1)}>− Take away</Btn>
+      </div>
+      {history.length > 0 && (
+        <div className="mt-2">
+          {history.map((r) => (
+            <div key={r.id} className="flex items-center justify-between gap-2 text-sm py-1" style={{ color: C.soft }}>
+              <span><span className="font-bold" style={{ color: r.cost > 0 ? C.redpen : "#2F7D4F" }}>{r.cost > 0 ? `−${r.cost}` : `+${-r.cost}`}</span> {r.name}{r.date ? `, ${fmtDate(r.date)}` : ""}</span>
+              <button className="underline flex-shrink-0" onClick={() => onUndo(r.id)}>Undo</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RewardsSetup({ data, onSettings, onRewards, onRedeem, onUndoStar }) {
   const [name, setName] = useState("");
   const [cost, setCost] = useState(20);
   const [pick, setPick] = useState({});
@@ -3052,8 +3254,8 @@ function RewardsSetup({ data, onSettings, onRewards, onRedeem }) {
               <div key={s.id} className="py-2 border-b" style={{ borderColor: C.rule }}>
                 <div className="flex items-center justify-between gap-2">
                   <span style={{ color: C.ink }}><strong>{s.name}</strong>: ★ {balance}</span>
-                  <button className="text-sm font-semibold underline" style={{ color: C.ink }} onClick={() => onRedeem(s.id, { name: "Bonus star", cost: -1 })}>+1 bonus star</button>
                 </div>
+                <StarAdjust data={data} student={s} balance={balance} onRedeem={onRedeem} onUndo={onUndoStar} />
                 {rewards.length > 0 && (
                   <div className="flex gap-2 mt-2">
                     <select className={`${inputCls} flex-1`} style={inputStyle} value={pick[s.id] || ""} onChange={(e) => setPick((p) => ({ ...p, [s.id]: e.target.value }))}>
@@ -3130,7 +3332,77 @@ function PinSetup({ pin, onSettings }) {
   );
 }
 
-function StudentsView({ data, onSaveStudent, onRemoveStudent, onSettings, onRestore, flash, onRewards, onRedeem, extraSetup }) {
+/* ---------- school profile form (first run and Setup) ---------- */
+function SchoolProfileForm({ settings, onSave, onSkip, saveLabel = "Save" }) {
+  const [state, setState] = useState(settings.state || "");
+  const [cur, setCur] = useState(settings.curricula || []);
+  const [otherOn, setOtherOn] = useState(!!settings.curriculumOther);
+  const [other, setOther] = useState(settings.curriculumOther || "");
+  const [stepUp, setStepUp] = useState(settings.stepUp || "");
+  const [scale, setScale] = useState(settings.gradeScale || "");
+  const toggle = (id) => setCur((c) => (c.includes(id) ? c.filter((x) => x !== id) : [...c, id]));
+  const autoScale = scaleOf({ curricula: cur.length ? cur : otherOn ? ["other"] : [] });
+  const fl = state === "FL";
+  function save() {
+    const st = STATES.find((x) => x.code === state);
+    onSave({
+      state, curricula: cur, curriculumOther: otherOn ? other.trim() : "",
+      stepUp: fl ? stepUp : "", gradeScale: scale, profileDone: true,
+      ...(st?.d && state !== settings.state ? { schoolDays: st.d } : {}),
+    });
+  }
+  const chip = (on) => ({ background: on ? C.ink : C.white, color: on ? C.white : C.ink, border: `1.5px solid ${C.ink}` });
+  return (
+    <div>
+      <Field label="Where do you homeschool?">
+        <select className={inputCls} style={inputStyle} value={state} onChange={(e) => setState(e.target.value)}>
+          <option value="">Choose a state</option>
+          {STATES.map((st) => <option key={st.code} value={st.code}>{st.name}</option>)}
+        </select>
+      </Field>
+
+      {fl && (
+        <fieldset className="mb-4">
+          <legend className="block text-sm font-semibold mb-1" style={{ color: C.ink }}>Do you receive a Step Up For Students scholarship?</legend>
+          <p className="text-xs mb-2" style={{ color: C.soft }}>Scholarship families have different rules from registered home education (for example, PEP students file a learning plan and take a yearly test instead of the district evaluation).</p>
+          {Object.entries(STEP_UP).map(([k, label]) => (
+            <label key={k} className="flex items-center gap-2 py-1 cursor-pointer" style={{ color: C.ink }}>
+              <input type="radio" name="stepup" className="w-5 h-5" checked={stepUp === k} onChange={() => setStepUp(k)} />{label}
+            </label>
+          ))}
+        </fieldset>
+      )}
+
+      <fieldset className="mb-4">
+        <legend className="block text-sm font-semibold mb-1" style={{ color: C.ink }}>Which curriculum do you use? Pick all that apply.</legend>
+        <div className="flex flex-wrap gap-2">
+          {CURRICULA.map((c) => (
+            <button key={c.id} type="button" aria-pressed={cur.includes(c.id)} onClick={() => toggle(c.id)}
+              className="rounded-full px-3 py-1.5 text-sm font-semibold focus:outline-none focus:ring-2" style={chip(cur.includes(c.id))}>{c.name}</button>
+          ))}
+          <button type="button" aria-pressed={otherOn} onClick={() => setOtherOn(!otherOn)}
+            className="rounded-full px-3 py-1.5 text-sm font-semibold focus:outline-none focus:ring-2" style={chip(otherOn)}>Other</button>
+        </div>
+        {otherOn && <input className={inputCls + " mt-2"} style={inputStyle} placeholder="e.g. Singapore Math, our own unit studies" value={other} onChange={(e) => setOther(e.target.value)} />}
+      </fieldset>
+
+      <Field label="Grading scale">
+        <select className={inputCls} style={inputStyle} value={scale} onChange={(e) => setScale(e.target.value)}>
+          <option value="">Match my curriculum ({autoScale === "abeka" ? "Abeka scale" : "10-point"})</option>
+          {Object.entries(SCALES).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+        </select>
+      </Field>
+
+      <div className="flex gap-3 mt-2">
+        <Btn className="flex-1" disabled={fl && !stepUp} onClick={save}>{saveLabel}</Btn>
+        {onSkip && <Btn kind="ghost" onClick={onSkip}>Skip for now</Btn>}
+      </div>
+      {fl && !stepUp && <p className="text-xs mt-2" style={{ color: C.soft }}>Answer the Step Up question to continue.</p>}
+    </div>
+  );
+}
+
+function StudentsView({ data, onSaveStudent, onRemoveStudent, onSettings, onRestore, flash, onRewards, onRedeem, onUndoStar, extraSetup }) {
   const [editing, setEditing] = useState(null);
   const [confirm, setConfirm] = useState(null);
   return (
@@ -3148,15 +3420,15 @@ function StudentsView({ data, onSaveStudent, onRemoveStudent, onSettings, onRest
         </div>
       ))}
       <Btn kind="ghost" className="w-full mt-4" onClick={() => setEditing("new")}><Plus size={18} />Add student</Btn>
-      <h3 className="text-lg font-bold mt-8 mb-2" style={{ color: C.ink }}>State</h3>
-      <Field label="Where you homeschool">
-        <select className={inputCls} style={inputStyle} value={data.settings.state || ""}
-          onChange={(e) => { const st = STATES.find((x) => x.code === e.target.value); onSettings({ state: e.target.value, ...(st?.d ? { schoolDays: st.d } : {}) }); }}>
-          <option value="">Choose a state</option>
-          {STATES.map((st) => <option key={st.code} value={st.code}>{st.name}</option>)}
-        </select>
-      </Field>
-      <p className="text-sm mb-2" style={{ color: C.soft }}>Requirements and a yearly checklist appear at the top of Progress. States with a day count set your school-day goal automatically.</p>
+      <h3 className="text-lg font-bold mt-8 mb-2" style={{ color: C.ink }}>Your school</h3>
+      <dl className="text-sm mb-3 grid gap-1" style={{ gridTemplateColumns: "auto 1fr", color: C.ink }}>
+        <dt className="font-semibold pr-3">State</dt><dd>{STATES.find((x) => x.code === data.settings.state)?.name || "Not chosen"}</dd>
+        {data.settings.state === "FL" && <><dt className="font-semibold pr-3">Step Up</dt><dd>{STEP_UP[data.settings.stepUp] || "Not answered"}</dd></>}
+        <dt className="font-semibold pr-3">Curriculum</dt><dd>{curriculumText(data.settings) || "Not chosen"}</dd>
+        <dt className="font-semibold pr-3">Grading</dt><dd>{SCALES[scaleOf(data.settings)].label}</dd>
+      </dl>
+      <Btn kind="ghost" onClick={() => setEditing("school")}>Change school details</Btn>
+      <p className="text-sm mt-2 mb-2" style={{ color: C.soft }}>Requirements and a yearly checklist appear at the top of Progress. States with a day count set your school-day goal automatically.</p>
 
       <h3 className="text-lg font-bold mt-8 mb-2" style={{ color: C.ink }}>School year</h3>
       <div className="grid grid-cols-2 gap-3">
@@ -3174,11 +3446,16 @@ function StudentsView({ data, onSaveStudent, onRemoveStudent, onSettings, onRest
         </Field>
       </div>
 
-      <RewardsSetup data={data} onSettings={onSettings} onRewards={onRewards} onRedeem={onRedeem} />
+      <RewardsSetup data={data} onSettings={onSettings} onRewards={onRewards} onRedeem={onRedeem} onUndoStar={onUndoStar} />
       {typeof extraSetup === "function" ? extraSetup(data) : extraSetup}
       <PinSetup pin={data.settings.pin} onSettings={onSettings} />
       <BackupPanel data={data} onRestore={onRestore} flash={flash} />
-      {editing && (
+      {editing === "school" && (
+        <Sheet title="Your school" onClose={() => setEditing(null)}>
+          <SchoolProfileForm settings={data.settings} onSave={(x) => { onSettings(x); setEditing(null); flash?.("School details saved"); }} />
+        </Sheet>
+      )}
+      {editing && editing !== "school" && (
         <Sheet title={editing === "new" ? "Add student" : `Edit ${editing.name}`} onClose={() => setEditing(null)}>
           <StudentForm initial={editing === "new" ? null : editing} onSave={(s) => { onSaveStudent(s); setEditing(null); }} onCancel={() => setEditing(null)} />
         </Sheet>
@@ -3188,7 +3465,7 @@ function StudentsView({ data, onSaveStudent, onRemoveStudent, onSettings, onRest
 }
 
 /* ---------- App ---------- */
-export default function HomeschoolTracker({ deviceRole = "teacher", extraSetup = null }) {
+export default function HomeschoolTracker({ deviceRole = "teacher", studentId = null, extraSetup = null }) {
   const studentDevice = deviceRole === "student";
   const [data, setData] = useState(null);
   const [tab, setTab] = useState("today");
@@ -3198,6 +3475,7 @@ export default function HomeschoolTracker({ deviceRole = "teacher", extraSetup =
   const [toast, setToast] = useState("");
   const [role, setRole] = useState(null); // null = who's here screen, "teacher", or a student id
   const [shifting, setShifting] = useState(false);
+  const calSub = useState("month"), importSub = useState("plan"), recordsSub = useState("grades");
   const [eventEditing, setEventEditing] = useState(null);
   const [syncing, setSyncing] = useState(false);
   const [printing, setPrinting] = useState(null);
@@ -3270,6 +3548,7 @@ export default function HomeschoolTracker({ deviceRole = "teacher", extraSetup =
   if (!data) {
     return <div className="min-h-screen flex items-center justify-center" style={{ ...ruled, color: C.soft }}><Loader2 className="animate-spin" /></div>;
   }
+  setSchool(data.settings);
 
   const stamp = (a) => (a.status === "todo" ? { ...a, finishedOn: null } : a.finishedOn ? a : { ...a, finishedOn: todayISO() });
   const saveAssignment = (raw, shareKeyIds = []) => {
@@ -3319,7 +3598,12 @@ export default function HomeschoolTracker({ deviceRole = "teacher", extraSetup =
   const markSent = (keys) => setData((p) => ({ ...p, gcalSent: { ...(p.gcalSent || {}), ...Object.fromEntries(keys.map((k) => [k, true])) } }));
   const saveTranscript = (sid, rows) => setData((p) => ({ ...p, transcripts: { ...(p.transcripts || {}), [sid]: rows } }));
   const setRewards = (rewards) => setData((p) => ({ ...p, rewards }));
-  const redeem = (sid, r) => { setData((p) => ({ ...p, redemptions: [...(p.redemptions || []), { id: uid(), studentId: sid, name: r.name, cost: r.cost, date: todayISO() }] })); flash(r.cost < 0 ? "Bonus star added" : `${r.name}: ${r.cost} stars used`); };
+  const redeem = (sid, r) => {
+    setData((p) => ({ ...p, redemptions: [...(p.redemptions || []), { id: uid(), studentId: sid, name: r.name, cost: r.cost, kind: r.kind || "reward", date: todayISO() }] }));
+    const who = data.students.find((x) => x.id === sid)?.name || "";
+    flash(r.kind === "add" ? `${who}: +${-r.cost} ${r.cost === -1 ? "star" : "stars"}` : r.kind === "take" ? `${who}: ${r.cost} ${r.cost === 1 ? "star" : "stars"} taken away` : `${r.name}: ${r.cost} stars used`);
+  };
+  const undoStar = (id) => { setData((p) => ({ ...p, redemptions: (p.redemptions || []).filter((r) => r.id !== id) })); flash("Undone"); };
   const attach = (id, att) => setData((p) => ({ ...p, assignments: p.assignments.map((a) => (a.id === id ? { ...a, attachments: [...(a.attachments || []), att] } : a)) }));
   const setCheck = (year, key, val) => setData((p) => ({ ...p, checklist: { ...(p.checklist || {}), [year]: { ...(p.checklist?.[year] || {}), [key]: val } } }));
   const switchUser = () => { setEditing(null); if (studentDevice) { setRole(null); return; } setRole(data.settings.pin ? null : "teacher"); if (!data.settings.pin) flash("Set a PIN in Setup to turn on student views"); };
@@ -3383,13 +3667,27 @@ export default function HomeschoolTracker({ deviceRole = "teacher", extraSetup =
     @media (prefers-reduced-motion: reduce) { .hs-root * { transition: none !important; animation: none !important; } }`;
 
   /* first run */
+  if (data.students.length === 0 && !data.settings.profileDone && !studentDevice) {
+    return (
+      <div className="hs-root min-h-screen" style={ruled}>
+        <style>{fontCss}</style>
+        <div className="max-w-md mx-auto px-6 pt-12 pb-10">
+          <h1 className="text-3xl font-bold mb-2" style={{ color: C.ink }}>Welcome to {BRAND.name}</h1>
+          <p className="mb-6 leading-relaxed" style={{ color: C.ink }}>A few questions about your school. They set your state checklist, grading scale, and default subjects. You can change them later in Setup.</p>
+          <div className="rounded-xl p-5" style={{ background: C.white, border: `1.5px solid ${C.ink}` }}>
+            <SchoolProfileForm settings={data.settings} saveLabel="Next: add a student" onSave={updateSettings} />
+          </div>
+        </div>
+      </div>
+    );
+  }
   if (data.students.length === 0) {
     return (
       <div className="hs-root min-h-screen" style={ruled}>
         <style>{fontCss}</style>
         <div className="max-w-md mx-auto px-6 pt-12 pb-10">
           <h1 className="text-3xl font-bold mb-2" style={{ color: C.ink }}>{BRAND.name}</h1>
-          <p className="mb-6 leading-relaxed" style={{ color: C.ink }}>Add your first student. Subjects fill in to match the Abeka lineup for their grade, and you can change them anytime.</p>
+          <p className="mb-6 leading-relaxed" style={{ color: C.ink }}>Add your first student. Subjects fill in with a typical lineup for their grade, and you can change them anytime.</p>
           <div className="rounded-xl p-5" style={{ background: C.white, border: `1.5px solid ${C.ink}` }}>
             <StudentForm onSave={saveStudent} />
           </div>
@@ -3398,6 +3696,17 @@ export default function HomeschoolTracker({ deviceRole = "teacher", extraSetup =
     );
   }
 
+  // A device connected with one child's own code: straight to that child, nothing else
+  if (studentDevice && studentId) {
+    const me = data.students.find((s) => s.id === studentId);
+    if (!me) return <div className="hs-root min-h-screen p-8" style={ruled}><style>{fontCss}</style><p style={{ color: C.ink }}>This device isn't connected to a student anymore. Ask your teacher for a new code.</p></div>;
+    return (
+      <div className="hs-root"><style>{fontCss}</style>
+        <StudentApp data={data} student={me} onToggle={studentToggle} onAttach={attach} onSwitch={null} flash={flash} onAddReading={addReading} onRemoveReading={removeReading} onTimer={onTimer} onPractice={onPractice} />
+        {toast && <div className="fixed left-1/2 z-50 rounded-lg px-4 py-2 font-semibold" style={{ bottom: 84, transform: "translateX(-50%)", background: C.ink, color: C.white }} role="status">{toast.m}</div>}
+      </div>
+    );
+  }
   if (studentDevice && (role === null || role === "teacher")) {
     return (
       <div className="hs-root"><style>{fontCss}</style>
@@ -3455,15 +3764,15 @@ export default function HomeschoolTracker({ deviceRole = "teacher", extraSetup =
         </div>
       </header>
 
-      <main className="max-w-2xl mx-auto px-4 pt-5">
+      <main key={active} className="max-w-2xl mx-auto px-4 pt-5">
         {tab === "today" && <TodayView data={data} activeStudents={activeStudents} day={day} setDay={setDay} onToggle={toggle} onEdit={setEditing} onAttend={attend} onNew={newAssignment} onShift={() => setShifting(true)} onAddEvent={newEvent} onEditEvent={setEventEditing} onPrint={setPrinting} />}
         {tab === "calendar" && <CalendarTab data={data} activeStudents={activeStudents} onToggle={toggle} onEdit={setEditing} onNew={newAssignment}
-          onAddEvent={newEvent} onEditEvent={setEventEditing} onOpenDay={(d) => { setDay(d); setTab("today"); }} onSync={FEATURES.gcal ? () => setSyncing(true) : undefined} onPrint={setPrinting} onDeleteMany={deleteMany} onDoneMany={doneMany} />}
-        {tab === "import" && <ImportView data={data} onMerge={mergeItems} onReplace={replaceSubject} onUpdateStudent={saveStudent} students={activeStudents.length ? activeStudents : data.students} settings={data.settings} onSettings={updateSettings} onAdd={addMany} flash={flash} />}
-        {tab === "progress" && <RecordsView data={data} activeStudents={activeStudents} onCheck={setCheck} onAddReading={addReading} onRemoveReading={removeReading} flash={flash}
+          onAddEvent={newEvent} onEditEvent={setEventEditing} onOpenDay={(d) => { setDay(d); setTab("today"); }} onSync={FEATURES.gcal ? () => setSyncing(true) : undefined} onPrint={setPrinting} onDeleteMany={deleteMany} onDoneMany={doneMany} sub={calSub} />}
+        {tab === "import" && <ImportView sub={importSub} data={data} onMerge={mergeItems} onReplace={replaceSubject} onUpdateStudent={saveStudent} students={activeStudents.length ? activeStudents : data.students} settings={data.settings} onSettings={updateSettings} onAdd={addMany} flash={flash} />}
+        {tab === "progress" && <RecordsView sub={recordsSub} data={data} activeStudents={activeStudents} onCheck={setCheck} onAddReading={addReading} onRemoveReading={removeReading} flash={flash}
           onAdd={(list) => { setData((p) => ({ ...p, assignments: [...p.assignments, ...list] })); flash(list.length === 1 ? "Passage assigned" : `Assigned to ${list.length} students`); }}
           onToggle={toggle} onEdit={setEditing} onSaveTranscript={saveTranscript} />}
-        {tab === "students" && <StudentsView data={data} onSaveStudent={saveStudent} onRemoveStudent={removeStudent} onSettings={updateSettings} onRestore={restore} flash={flash} onRewards={setRewards} onRedeem={redeem} extraSetup={extraSetup} />}
+        {tab === "students" && <StudentsView data={data} onSaveStudent={saveStudent} onRemoveStudent={removeStudent} onSettings={updateSettings} onRestore={restore} flash={flash} onRewards={setRewards} onRedeem={redeem} onUndoStar={undoStar} extraSetup={extraSetup} />}
       </main>
 
       <nav className="fixed bottom-0 inset-x-0 z-30" style={{ background: C.white, borderTop: `2px solid ${C.ink}` }}>
@@ -3478,6 +3787,12 @@ export default function HomeschoolTracker({ deviceRole = "teacher", extraSetup =
         </div>
       </nav>
 
+      {!data.settings.profileDone && role === "teacher" && (
+        <Sheet title="Tell us about your school" onClose={() => updateSettings({ profileDone: true })}>
+          <p className="mb-4 text-sm leading-relaxed" style={{ color: C.ink }}>New: your curriculum, grading scale, and (in Florida) whether you receive a Step Up For Students scholarship. These shape your checklist and reports.</p>
+          <SchoolProfileForm settings={data.settings} onSave={updateSettings} onSkip={() => updateSettings({ profileDone: true })} />
+        </Sheet>
+      )}
       {eventEditing && <EventSheet initial={eventEditing} data={data} onSave={saveEvent} onDelete={deleteEvent} onClose={() => setEventEditing(null)} />}
       {syncing && <GcalSync data={data} students={activeStudents} onSent={markSent} onClose={() => setSyncing(false)} />}
       {printing && <PrintSheet data={data} students={activeStudents} day={printing} onClose={() => setPrinting(null)} />}

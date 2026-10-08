@@ -1,7 +1,7 @@
 // Sign-in, family setup, and student tablet pairing. Once signed in, it hands off to the tracker.
 import { useEffect, useRef, useState } from "react";
 import { supabase, FEATURES } from "./platform.js";
-import { createSupabaseStorage } from "./sync.js";
+import { createSupabaseStorage, createChildStorage, confirmedRemoved } from "./sync.js";
 import CalendarLinks from "./CalendarLinks.jsx";
 import HomeschoolTracker from "./Tracker.jsx";
 import { BRAND } from "./brand.js";
@@ -191,6 +191,61 @@ function CreateFamily({ onDone }) {
 }
 
 // Shown inside the tracker's Setup tab for teachers
+// One code per child: a device connected with it shows only that child
+function ChildDevices({ students }) {
+  const [info, setInfo] = useState({});
+  const [codes, setCodes] = useState({});
+  const [busy, setBusy] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [note, setNote] = useState("");
+  const load = () => supabase.rpc("student_devices").then(({ data }) => setInfo(Object.fromEntries((data || []).map((r) => [r.student_id, r]))));
+  useEffect(() => { load(); }, []);
+  async function make(id) {
+    setBusy(id); setNote("");
+    const { data, error } = await supabase.rpc("new_student_code", { p_student: id });
+    if (error) setNote(friendly(error)); else { setCodes((c) => ({ ...c, [id]: data })); load(); }
+    setBusy("");
+  }
+  async function disconnect(id, name) {
+    const { data, error } = await supabase.rpc("remove_child_devices", { p_student: id });
+    setNote(error ? friendly(error) : `Disconnected ${data} ${data === 1 ? "device" : "devices"} for ${name}. Their code no longer works; make a new one to reconnect.`);
+    setConfirm(""); setCodes((c) => ({ ...c, [id]: undefined })); load();
+  }
+  if (!students.length) return <p className="text-sm mb-2" style={{ color: C.soft }}>Add a student first, then make their code here.</p>;
+  return (
+    <div className="mb-2">
+      {students.map((st) => {
+        const r = info[st.id] || {};
+        return (
+          <div key={st.id} className="py-3 border-b" style={{ borderColor: C.rule }}>
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <div className="font-semibold" style={{ color: C.ink }}>{st.name}</div>
+                <div className="text-xs" style={{ color: C.soft }}>
+                  {r.devices ? `${r.devices} ${r.devices === 1 ? "device" : "devices"} connected` : "No devices yet"}{r.has_code ? "" : r.devices ? ", no active code" : ""}
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <Button kind="ghost" className="text-sm" disabled={busy === st.id} onClick={() => make(st.id)}>{r.has_code || codes[st.id] ? "New code" : "Make code"}</Button>
+                {(r.devices > 0 || r.has_code) && (
+                  <Button kind="danger" className="text-sm" onClick={() => (confirm === st.id ? disconnect(st.id, st.name) : setConfirm(st.id))}>{confirm === st.id ? "Confirm" : "Disconnect"}</Button>
+                )}
+              </div>
+            </div>
+            {codes[st.id] && (
+              <div className="rounded-lg p-3 mt-2 text-center" style={{ background: "#FFF6D6" }}>
+                <div className="text-2xl font-bold tracking-widest" style={{ color: C.ink }}>{codes[st.id]}</div>
+                <div className="text-xs mt-1" style={{ color: C.soft }}>Only {st.name}'s lessons, books, and stars appear on a device connected with this code. A new code retires this one; devices already connected stay connected.</div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {note && <p className="text-sm my-2" style={{ color: C.ink }}>{note}</p>}
+    </div>
+  );
+}
+
 function FamilyPanel({ membership, onSignOut, students = [] }) {
   const [aiOn, setAiOn] = useState(null);
   useEffect(() => { supabase.rpc("can_use_ai").then(({ data }) => setAiOn(data === true)); }, []);
@@ -219,12 +274,15 @@ function FamilyPanel({ membership, onSignOut, students = [] }) {
     <div>
       <h3 className="text-lg font-bold mt-8 mb-1" style={{ color: C.ink }}>Devices and sign-in</h3>
       <p className="text-sm mb-3" style={{ color: C.soft }}>{membership.family_name}. Everything syncs between your devices automatically.</p>
-      <div className="font-semibold mb-1" style={{ color: C.ink }}>Student tablets</div>
-      <p className="text-sm mb-2 leading-relaxed" style={{ color: C.ink }}>On the tablet, open this site, tap <strong>Student tablet</strong>, and enter the code. It will only ever show the kids' views.</p>
+      <div className="font-semibold mb-1" style={{ color: C.ink }}>Each child's own device</div>
+      <p className="text-sm mb-2 leading-relaxed" style={{ color: C.ink }}>Make a code for a child, then on their iPad or phone open this site, tap <strong>Student tablet</strong>, and enter it. That device shows only that child: never a brother's or sister's work, grades, or photos.</p>
+      <ChildDevices students={students} />
+      <div className="font-semibold mt-4 mb-1" style={{ color: C.ink }}>Shared family tablet (optional)</div>
+      <p className="text-sm mb-2 leading-relaxed" style={{ color: C.ink }}>One tablet the children take turns on. Each child taps their name, and every child's work is on it.</p>
       {codes.student && <CodeBox code={codes.student} help="Making a new code retires this one. Tablets already connected stay connected." />}
       <div className="grid grid-cols-2 gap-2 mb-2">
         <Button kind="ghost" disabled={busy === "student"} onClick={() => makeCode("student")}>{codes.student ? "New code" : "Tablet code"}</Button>
-        <Button kind="danger" onClick={() => (confirm ? removeTablets() : setConfirm(true))}>{confirm ? "Tap to confirm" : "Disconnect tablets"}</Button>
+        <Button kind="danger" onClick={() => (confirm ? removeTablets() : setConfirm(true))}>{confirm ? "Tap to confirm" : "Disconnect all"}</Button>
       </div>
       <div className="font-semibold mt-4 mb-1" style={{ color: C.ink }}>Another teacher</div>
       <p className="text-sm mb-2 leading-relaxed" style={{ color: C.ink }}>A co-teacher signs up with their own email on this site, then enters this code to share your homeschool.</p>
@@ -267,10 +325,15 @@ export default function AuthGate() {
   async function loadMembership(session) {
     if (!session) { setPhase("signin"); return; }
     const { data, error } = await supabase.rpc("my_membership");
-    if (error) { setNotice({ text: friendly(error) }); setPhase("signin"); return; }
+    // Can't reach the database right now: keep the device signed in and try again shortly
+    if (error || data == null) { setPhase("offline"); setTimeout(() => supabase.auth.getSession().then(({ data: d }) => loadMembership(d.session)), 5000); return; }
     const row = Array.isArray(data) ? data[0] : data;
     if (row) { setMembership(row); setPhase("ready"); }
-    else if (session.user?.is_anonymous) { await supabase.auth.signOut(); setPhase("signin"); }
+    else if (session.user?.is_anonymous) {
+      // A tablet is only signed out when the database clearly says it was disconnected
+      if (await confirmedRemoved(supabase)) { await supabase.auth.signOut(); setPhase("signin"); }
+      else loadMembership(session);
+    }
     else setPhase("family");
   }
 
@@ -290,7 +353,7 @@ export default function AuthGate() {
   // Connect the tracker's storage to this family's database
   useEffect(() => {
     if (phase !== "ready" || !membership) return;
-    const storage = createSupabaseStorage({
+    const storage = (membership.student_id ? createChildStorage : createSupabaseStorage)({
       supabase, familyId: membership.family_id, onStatus: setSync,
       onLostAccess: async () => {
         storageRef.current?.dispose(); window.storage = undefined; setReady(false);
@@ -323,6 +386,7 @@ export default function AuthGate() {
       </Shell>
     );
   }
+  if (phase === "offline") return <Shell title={BRAND.name}><p style={{ color: C.soft }}>Can't reach the internet right now. Still signed in; trying again…</p></Shell>;
   if (phase === "loading") return <Shell title={BRAND.name}><p style={{ color: C.soft }}>Loading…</p></Shell>;
   if (phase === "newpassword") return <NewPassword onDone={() => supabase.auth.getSession().then(({ data }) => loadMembership(data.session))} />;
   if (phase === "signin") return <SignIn key={(notice?.text || "") + route} notice={notice} initialTab={route === "tablet" ? "tablet" : "teacher"} initialMode={route === "signup" ? "signup" : "signin"} />;
@@ -333,6 +397,7 @@ export default function AuthGate() {
       <HomeschoolTracker
         key={membership.family_id}
         deviceRole={membership.role}
+        studentId={membership.student_id || null}
         extraSetup={membership.role === "teacher" ? (data) => <FamilyPanel membership={membership} onSignOut={signOut} students={data.students} /> : null}
       />
       <SyncBadge status={sync} />

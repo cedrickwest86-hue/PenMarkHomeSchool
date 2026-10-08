@@ -21,7 +21,7 @@ function fold(line) {
 }
 function alarm(trigger, text) { return ["BEGIN:VALARM", "ACTION:DISPLAY", `DESCRIPTION:${icsText(text)}`, `TRIGGER:${trigger}`, "END:VALARM"]; }
 
-export function buildCalendar(feed, brand = "Penmark", now = new Date()) {
+export function buildCalendar(feed, brand = "West Homeschool", now = new Date()) {
   const stamp = now.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
   const today = now.toISOString().slice(0, 10);
   const students = feed.students || [];
@@ -90,7 +90,7 @@ async function calendarResponse(token, env) {
   });
   const feed = r.ok ? await r.json().catch(() => null) : null;
   if (!feed) return new Response("This calendar link is no longer active.", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8" } });
-  return new Response(buildCalendar(feed, env.BRAND_NAME || "Penmark"), {
+  return new Response(buildCalendar(feed, env.BRAND_NAME || "West Homeschool"), {
     headers: { "Content-Type": "text/calendar; charset=utf-8", "Cache-Control": "public, max-age=900", "Content-Disposition": 'inline; filename="school.ics"' },
   });
 }

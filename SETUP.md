@@ -1,4 +1,4 @@
-# Penmark: setup guide
+# West Homeschool: setup guide
 
 About 30–40 minutes, once. Because Supabase and Cloudflare are already connected to your GitHub, both deploy straight from your repository. After setup, any change you push to GitHub updates the site, the database, and the AI worker automatically.
 
@@ -91,7 +91,7 @@ In the site, **Setup** → *Devices and sign-in* should now say **AI tools: on**
 1. Open your site. You'll see the home page with the features, pictures, and a **Try the live demo** button. Click **Join the free beta** (or **Sign in** at the top) → **Create an account**. Confirm the email Supabase sends, then sign in.
 2. Name your homeschool.
 3. **Bring over your data:** in the Claude version, **Setup** → **Back up**. In the new site, **Setup** → **Restore** and pick that file. Answer keys move into the teacher-only area automatically.
-4. **Student tablet:** **Setup** → *Devices and sign-in* → **Tablet code**. On the tablet, open the site → **Student tablet** → enter the code. On an iPad, **Share** → **Add to Home Screen** gives it an app icon.
+4. **Each child's device:** **Setup** → *Devices and sign-in* → **Make code** next to a child. On that child's iPad or phone, open the site → **Student tablet** → enter the code. That device shows only that child. (A **Shared family tablet** code, where every child taps their name, is still available below it.)
 5. **Co-teacher (optional):** **Co-teacher code**. They create their own account on the site, then enter it.
 
 ---
