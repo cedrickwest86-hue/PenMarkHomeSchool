@@ -132,7 +132,7 @@ export default {
     // Only pass through what the tracker needs. The model and token cap are set here, not by the page.
     const payload = {
       model: env.MODEL || "claude-sonnet-5-5",
-      max_tokens: Math.min(Math.max(Number(body.max_tokens) || 1000, 1), Number(env.MAX_TOKENS) || 4096),
+      max_tokens: Math.min(Math.max(Number(body.max_tokens) || 1000, 1), Number(env.MAX_TOKENS) || 8192),
       messages: body.messages,
     };
     const res = await fetch("https://api.anthropic.com/v1/messages", {

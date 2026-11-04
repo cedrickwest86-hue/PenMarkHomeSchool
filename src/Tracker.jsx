@@ -303,19 +303,54 @@ function parseJSONLoose(text) {
   const j = Math.max(t.lastIndexOf("]"), t.lastIndexOf("}"));
   return JSON.parse(t.slice(i, j + 1));
 }
-async function askClaude(content, extra = {}) {
-  const res = await aiFetch({
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 1000, messages: [{ role: "user", content }], ...extra }),
-  });
+// Turn the AI service's error into something a parent can act on
+function aiErrorText(status, msg = "") {
+  if (/credit balance/i.test(msg)) return "Your Anthropic account is out of credit. Add credit at console.anthropic.com → Billing, then try again.";
+  if (status === 529 || /overloaded/i.test(msg)) return "The AI service is busy right now. Try again in a minute.";
+  if (status === 429 || /rate limit/i.test(msg)) return "Too many AI requests at once. Wait a minute and try again.";
+  if (/media type|image format|could not process image|invalid image/i.test(msg)) return "That photo's file type couldn't be read. Take a screenshot of it, or set the iPhone to Settings → Camera → Formats → Most Compatible.";
+  if (/too large|exceeds|maximum/i.test(msg)) return "That file is too large. Try one page at a time, or a smaller PDF.";
+  if (/model/i.test(msg) && /not found|invalid/i.test(msg)) return "The AI worker's MODEL setting isn't a valid model name. In Cloudflare, delete the MODEL setting to use the default.";
+  return msg || "The AI service had a problem. Try again.";
+}
+async function askClaudeFull(content, extra = {}) {
+  let res;
+  try {
+    res = await aiFetch({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ max_tokens: 1000, messages: [{ role: "user", content }], ...extra }),
+    });
+  } catch {
+    throw new Error("Couldn't reach the AI service. Check your internet connection and try again.");
+  }
   const j = await res.json().catch(() => ({ error: { message: "The AI service didn't respond. Try again in a minute." } }));
   if (j.error) {
-    const err = new Error(j.error.message || "request failed");
-    err.setup = [401, 403, 503].includes(res.status); // AI not set up, not turned on, or not signed in
+    const setup = [401, 403, 503].includes(res.status); // AI not set up, not turned on, or not signed in
+    const err = new Error(setup ? j.error.message || "request failed" : aiErrorText(res.status, j.error.message));
+    err.setup = setup; err.status = res.status; err.api = true;
     throw err;
   }
-  return (j.content || []).map((c) => (c.type === "text" ? c.text : "")).join("\n").trim();
+  return { text: (j.content || []).map((c) => (c.type === "text" ? c.text : "")).join("\n").trim(), stop: j.stop_reason };
+}
+async function askClaude(content, extra = {}) {
+  return (await askClaudeFull(content, extra)).text;
+}
+// Read a JSON array even if the answer was cut off partway: keep every complete {...} item
+function parseItemsLoose(text) {
+  try { const v = parseJSONLoose(text); if (Array.isArray(v)) return v; } catch {}
+  const t = text.replace(/```json|```/g, "");
+  const start = t.indexOf("[");
+  if (start < 0) return null;
+  const out = []; let depth = 0, inStr = false, esc = false, from = -1;
+  for (let i = start + 1; i < t.length; i++) {
+    const ch = t[i];
+    if (inStr) { if (esc) esc = false; else if (ch === "\\") esc = true; else if (ch === '"') inStr = false; continue; }
+    if (ch === '"') inStr = true;
+    else if (ch === "{") { if (depth === 0) from = i; depth++; }
+    else if (ch === "}") { depth--; if (depth === 0 && from >= 0) { try { out.push(JSON.parse(t.slice(from, i + 1))); } catch {} from = -1; } }
+  }
+  return out.length ? out : null;
 }
 // Show the real reason when AI isn't available; otherwise the friendly fallback
 const aiReason = (e, fallback) => (e?.setup ? e.message : fallback);
@@ -354,8 +389,8 @@ async function shrinkImage(file, max = 2000) {
     return file;
   }
 }
-const fileBlock = async (original) => {
-  const file = original.type === "application/pdf" ? original : await shrinkImage(original, 1600);
+const fileBlock = async (original, max = 2000) => {
+  const file = original.type === "application/pdf" ? original : await shrinkImage(original, max);
   const data = await fileToBase64(file);
   return file.type === "application/pdf"
     ? { type: "document", source: { type: "base64", media_type: "application/pdf", data } }
@@ -1001,15 +1036,21 @@ function PhotoImport({ students, onAdd, onMerge, flash, events = [], settings = 
     for (let p = 0; p < files.length; p++) {
       setBusy(`Reading page ${p + 1} of ${files.length}…`);
       try {
-        const text = await askClaude([await fileBlock(files[p]), { type: "text", text: `This is a page from a homeschool resource (${SCHOOL.curriculum || "curriculum not specified"}) for a grade ${student.grade} student: most likely the Curriculum Lesson Plans (a teacher/parent book organized by numbered lessons), or a daily schedule, assignment sheet, or workbook page.
+        const block = await fileBlock(files[p]);
+        const ask = () => askClaudeFull([block, { type: "text", text: `This is a page from a homeschool resource (${SCHOOL.curriculum || "curriculum not specified"}) for a grade ${student.grade} student: most likely the Curriculum Lesson Plans (a teacher/parent book organized by numbered lessons), or a daily schedule, assignment sheet, or workbook page.
 The student's subjects are: ${student.subjects.join(", ")}.
 If it is an Abeka lesson plan, it is a table with three columns: the subject, "Preparation" (what the student works on and what to have ready), and "Procedure" (step-by-step directions for the teacher).
 Extract one item per subject row that has student work, including quizzes, tests, exams, book reports, seatwork, and homework, with their numbers (for example "Quiz 7" or "Test 3").
 Skip rows with only teacher notes and no student work (for example Classroom Routines, Reading Circle, or Activity Time before it begins). Skip anything cut off at the edge of the photo that you can't read.
 Respond with ONLY a JSON array, no prose:
 [{"subject": the closest match from the student's subjects, "lesson": the lesson number the row belongs to (from the "Lesson N" banner above it) as an integer, or null if none is shown, "type": one of ${JSON.stringify(TYPES)}, "title": a short plain description of the student's work with book and page, like "Phonics and Language 2 p. 3", "prep": the Preparation column for this row as plain text, one item per line, "procedure": the Procedure column for this row as plain text, one step per line (leave out "Play Video"), "day": 0-based index of the day within this page if it covers several days and shows no lesson numbers, otherwise 0}]
-Copy the wording faithfully; don't add anything that isn't on the page. If nothing on the page is an assignment, return [].` }], { max_tokens: 4000 });
-        const parsed = parseJSONLoose(text);
+Copy the wording faithfully; don't add anything that isn't on the page. If nothing on the page is an assignment, return [].` }], { max_tokens: 8000 });
+        let r;
+        try { r = await ask(); } catch (e1) { if (e1.setup || ![429, 500, 502, 529].includes(e1.status)) throw e1; await new Promise((ok) => setTimeout(ok, 4000)); r = await ask(); }
+        let parsed = parseItemsLoose(r.text);
+        if (!parsed) { r = await ask(); parsed = parseItemsLoose(r.text); } // one retry if the answer came back unusable
+        if (!parsed) { console.warn("Photo import: unreadable answer", r.text); throw new Error("unreadable"); }
+        if (r.stop === "max_tokens") setError(`Page ${p + 1} has a lot on it, so a few rows at the bottom may be missing. Check the list, or photograph the bottom half separately.`);
         for (const x of Array.isArray(parsed) ? parsed : []) {
           const subject = student.subjects.includes(x.subject) ? x.subject : matchSubject(x.subject, student.subjects) || student.subjects[0];
           const item = {
@@ -1026,7 +1067,8 @@ Copy the wording faithfully; don't add anything that isn't on the page. If nothi
         }
       } catch (e) {
         if (e?.setup) { setError(e.message); break; }
-        setError(`Page ${p + 1} couldn't be read. Try a straight-on, well-lit photo of it.`);
+        if (e?.api || /HEIC|format this browser|internet/.test(e?.message || "")) { setError(`Page ${p + 1}: ${e.message}`); if (e.api && e.status !== 529) break; continue; }
+        setError(`Page ${p + 1} came back in a form the app couldn't use. Try again, or crop the photo to just the lesson plan table.`);
       }
     }
     setBusy("");
