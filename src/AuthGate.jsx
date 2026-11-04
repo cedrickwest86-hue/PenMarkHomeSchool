@@ -50,6 +50,8 @@ const friendly = (e) => {
   if (/anonymous sign-ins are disabled/i.test(m)) return "Student tablets aren't turned on yet. In Supabase, go to Authentication and allow anonymous sign-ins.";
   if (/invalid login credentials/i.test(m)) return "That email and password didn't match.";
   if (/email not confirmed/i.test(m)) return "Confirm your email first. Check your inbox for the link from Supabase.";
+  if (/already (been )?registered|already exists|email_exists/i.test(m)) return "That email already has an account here. Use a different email, or ask the teacher to remove this device and add you by that email instead.";
+  if (/rate limit|too many/i.test(m)) return "Too many tries. Wait a minute and try again.";
   if (/failed to fetch|network/i.test(m)) return "Can't reach the server. Check your internet connection.";
   return m.replace(/^.*?:\s(?=[A-Z])/, "") || "Something went wrong. Try again.";
 };
@@ -83,12 +85,12 @@ function SignIn({ notice, initialTab = "teacher", initialMode = "signin" }) {
     } catch (e2) { setErr(friendly(e2)); }
     setBusy(false);
   }
-  async function tablet(e) {
+  async function withCode(e) {
     e.preventDefault(); setBusy(true); setErr("");
     try {
       const { error } = await supabase.auth.signInAnonymously();
       if (error) throw error;
-      const { error: jErr } = await supabase.rpc("join_with_code", { p_code: code });
+      const { error: jErr } = await supabase.rpc("join_with_code", { p_code: code.trim() });
       if (jErr) { await supabase.auth.signOut(); throw jErr; }
       window.dispatchEvent(new Event("hs-membership-changed"));
     } catch (e2) { setErr(friendly(e2)); }
@@ -97,8 +99,8 @@ function SignIn({ notice, initialTab = "teacher", initialMode = "signin" }) {
 
   return (
     <Shell title={mode === "signup" && tab === "teacher" ? (BRAND.beta ? "Join the beta" : "Create your account") : "Sign in"}>
-      <div className="grid grid-cols-2 mb-4 rounded-lg overflow-hidden" style={{ border: `1.5px solid ${C.ink}` }}>
-        {[["teacher", "I'm the teacher"], ["tablet", "Student tablet"]].map(([id, label]) => (
+      <div className="grid grid-cols-3 mb-4 rounded-lg overflow-hidden" style={{ border: `1.5px solid ${C.ink}` }}>
+        {[["teacher", "Teacher"], ["coteacher", "Co-teacher"], ["tablet", "Student tablet"]].map(([id, label]) => (
           <button key={id} onClick={() => { setTab(id); setErr(""); setMsg(""); }} className="py-2 font-semibold focus:outline-none focus:ring-2"
             style={tab === id ? { background: C.ink, color: C.white } : { background: C.white, color: C.ink }}>{label}</button>
         ))}
@@ -123,8 +125,19 @@ function SignIn({ notice, initialTab = "teacher", initialMode = "signin" }) {
               {mode === "reset" && <button type="button" className="underline" style={{ color: C.soft }} onClick={() => setMode("signin")}>Back to sign in</button>}
             </div>
           </form>
+        ) : tab === "coteacher" ? (
+          <form onSubmit={withCode}>
+            <p className="mb-3 leading-relaxed" style={{ color: C.ink }}>Helping teach? Enter the co-teacher code the other teacher made for you. No email needed today; you can create your own login later from Setup.</p>
+            <Label text="Co-teacher code">
+              <input required autoCapitalize="characters" autoComplete="off" className={`${input} text-xl tracking-widest text-center`} style={inputStyle} placeholder="XXXXX-XXXXX" value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} />
+            </Label>
+            {msg && <p className="mb-3" style={{ color: C.ink }}>{msg}</p>}
+            {err && <p className="mb-3" style={{ color: C.redpen }}>{err}</p>}
+            <Button className="w-full" disabled={busy || code.replace(/[^A-Z0-9]/gi, "").length < 10}>{busy ? "Joining…" : "Join as co-teacher"}</Button>
+            <p className="text-xs mt-3" style={{ color: C.soft }}>Already have your own login? Use the Teacher tab.</p>
+          </form>
         ) : (
-          <form onSubmit={tablet}>
+          <form onSubmit={withCode}>
             <p className="mb-3 leading-relaxed" style={{ color: C.ink }}>Set up this device for the kids. It will only show their lessons, never the teacher tools.</p>
             <Label text="Tablet code from the teacher's Setup screen">
               <input required autoCapitalize="characters" autoComplete="off" className={`${input} text-xl tracking-widest text-center`} style={inputStyle} placeholder="XXXXX-XXXXX" value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} />
@@ -246,7 +259,166 @@ function ChildDevices({ students }) {
   );
 }
 
-function FamilyPanel({ membership, onSignOut, students = [] }) {
+// A co-teacher who joined with only a code adds an email and password to the same login.
+// Step 1: email (Supabase sends a confirmation link). Step 2: after confirming, choose a password.
+function YourLogin({ user, compact = false }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [msg, setMsg] = useState("");
+  const [changing, setChanging] = useState(false);
+  const here = window.location.origin + window.location.pathname;
+  const meta = user?.user_metadata || {};
+  const step = user?.is_anonymous ? (user.new_email && !changing ? "confirm" : "email") : meta.coteacher_upgrade && !meta.has_password ? "password" : "done";
+  async function act(fn) {
+    setBusy(true); setErr(""); setMsg("");
+    try { await fn(); } catch (e) { setErr(friendly(e)); }
+    setBusy(false);
+  }
+  const sendEmail = (e) => { e.preventDefault(); act(async () => {
+    const { error } = await supabase.auth.updateUser({ email: email.trim(), data: { coteacher_upgrade: true } }, { emailRedirectTo: here });
+    if (error) throw error;
+    setChanging(false);
+    await supabase.auth.refreshSession();
+  }); };
+  const checkConfirmed = () => act(async () => {
+    const { data, error } = await supabase.auth.refreshSession();
+    if (error) throw error;
+    if (data.user?.is_anonymous) setMsg("Not confirmed yet. Open the link in the email, then tap this again.");
+  });
+  const resend = () => act(async () => {
+    const { error } = await supabase.auth.resend({ type: "email_change", email: user.new_email, options: { emailRedirectTo: here } });
+    if (error) throw error;
+    setMsg("Sent again. Check your spam folder too.");
+  });
+  const savePassword = (e) => { e.preventDefault(); act(async () => {
+    const { error } = await supabase.auth.updateUser({ password, data: { has_password: true } });
+    if (error) throw error;
+  }); };
+
+  if (step === "done") {
+    return compact ? null : <p className="text-sm mb-3" style={{ color: C.ink }}>Signed in as <strong>{user?.email}</strong>. You can sign in with this email on any device.</p>;
+  }
+  return (
+    <div className="rounded-xl p-4 mb-4" style={{ background: "#FFF6D6", border: `1.5px solid ${C.pencil}` }}>
+      {step === "email" && (
+        <form onSubmit={sendEmail}>
+          <div className="font-bold mb-1" style={{ color: C.ink }}>You're signed in on this device only</div>
+          <p className="text-sm mb-3 leading-relaxed" style={{ color: C.ink }}>Create your own login so you can sign in on any phone or computer and won't lose access if this browser is cleared. Everything you've done stays.</p>
+          <Label text="Your email"><input type="email" required autoComplete="email" className={input} style={inputStyle} value={email} onChange={(e) => setEmail(e.target.value)} /></Label>
+          {err && <p className="mb-3 text-sm" style={{ color: C.redpen }}>{err}</p>}
+          <Button className="w-full" disabled={busy}>{busy ? "Sending…" : "Create my login"}</Button>
+          <p className="text-xs mt-2" style={{ color: C.soft }}>Until then, the AI tools and making codes for devices are off for you.</p>
+        </form>
+      )}
+      {step === "confirm" && (
+        <div>
+          <div className="font-bold mb-1" style={{ color: C.ink }}>Check your email</div>
+          <p className="text-sm mb-3 leading-relaxed" style={{ color: C.ink }}>We sent a confirmation link to <strong>{user.new_email}</strong>. Open it (on this device if you can), then come back and choose a password.</p>
+          {msg && <p className="mb-2 text-sm" style={{ color: C.ink }}>{msg}</p>}
+          {err && <p className="mb-2 text-sm" style={{ color: C.redpen }}>{err}</p>}
+          <Button className="w-full mb-2" disabled={busy} onClick={checkConfirmed}>I've confirmed it</Button>
+          <div className="flex justify-between text-sm">
+            <button type="button" className="underline" style={{ color: C.ink }} disabled={busy} onClick={resend}>Send it again</button>
+            <button type="button" className="underline" style={{ color: C.soft }} onClick={() => { setChanging(true); setEmail(""); setMsg(""); setErr(""); }}>Use a different email</button>
+          </div>
+        </div>
+      )}
+      {step === "password" && (
+        <form onSubmit={savePassword}>
+          <div className="font-bold mb-1" style={{ color: C.ink }}>Last step: choose a password</div>
+          <p className="text-sm mb-3" style={{ color: C.ink }}>Your email <strong>{user.email}</strong> is confirmed.</p>
+          <Label text="Password (8 or more characters)"><input type="password" required minLength={8} autoComplete="new-password" className={input} style={inputStyle} value={password} onChange={(e) => setPassword(e.target.value)} /></Label>
+          {err && <p className="mb-3 text-sm" style={{ color: C.redpen }}>{err}</p>}
+          <Button className="w-full" disabled={busy}>Save password</Button>
+        </form>
+      )}
+    </div>
+  );
+}
+
+// Small reminder in the corner for a co-teacher who hasn't created a login yet
+function DeviceOnlyPill({ user }) {
+  const [open, setOpen] = useState(false);
+  const [hidden, setHidden] = useState(false);
+  const meta = user?.user_metadata || {};
+  const pending = user?.is_anonymous || (meta.coteacher_upgrade && !meta.has_password);
+  if (!pending || hidden) return null;
+  return (
+    <>
+      <div className="hs-gate fixed z-40 flex items-center rounded-full text-xs font-semibold" style={{ right: 8, bottom: 76, background: C.pencil, color: C.ink, border: `1px solid ${C.ink}` }}>
+        <button className="pl-3 pr-2 py-1.5 focus:outline-none focus:ring-2 rounded-full" onClick={() => setOpen(true)}>{user?.is_anonymous ? "This device only · Create my login" : "Finish your login"}</button>
+        <button aria-label="Hide for now" className="pr-3 pl-1 py-1.5" onClick={() => setHidden(true)}>×</button>
+      </div>
+      {open && (
+        <div className="hs-gate fixed inset-0 z-50 flex items-end sm:items-center justify-center p-3" style={{ background: "rgba(27,42,74,0.45)" }} onClick={() => setOpen(false)}>
+          <div className="w-full max-w-md rounded-xl p-4" style={{ background: C.white }} onClick={(e) => e.stopPropagation()}>
+            <div className="flex justify-between items-center mb-2">
+              <h2 className="text-lg font-bold" style={{ color: C.ink }}>Your login</h2>
+              <button aria-label="Close" className="text-xl px-2" style={{ color: C.ink }} onClick={() => setOpen(false)}>×</button>
+            </div>
+            <YourLogin user={user} compact />
+            {!pending && <p style={{ color: C.ink }}>All set.</p>}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// Everyone with teacher access, with Remove for co-teachers
+function Teachers({ deviceOnly }) {
+  const [list, setList] = useState(null);
+  const [invites, setInvites] = useState([]);
+  const [confirm, setConfirm] = useState("");
+  const [note, setNote] = useState("");
+  const load = () => {
+    supabase.rpc("family_teachers").then(({ data }) => setList(data || []));
+    supabase.rpc("open_teacher_invites").then(({ data }) => setInvites(data || []));
+  };
+  useEffect(() => { load(); }, []);
+  useEffect(() => { const f = () => load(); window.addEventListener("hs-teachers-changed", f); return () => window.removeEventListener("hs-teachers-changed", f); }, []);
+  async function remove(t) {
+    const { error } = await supabase.rpc("remove_teacher", { p_user: t.user_id });
+    setNote(error ? friendly(error) : `Removed ${t.email || "that co-teacher"}. They no longer have access.`);
+    setConfirm(""); load();
+  }
+  async function cancelInvites() {
+    const { data, error } = await supabase.rpc("cancel_teacher_invites");
+    setNote(error ? friendly(error) : `Canceled ${data} unused ${data === 1 ? "code" : "codes"}.`);
+    load();
+  }
+  if (!list) return null;
+  return (
+    <div className="mb-2">
+      {list.map((t) => (
+        <div key={t.user_id} className="flex items-center justify-between gap-2 py-2 border-b" style={{ borderColor: C.rule }}>
+          <div className="min-w-0">
+            <div className="font-semibold truncate" style={{ color: C.ink }}>{t.email || "Co-teacher (this device only)"}{t.is_me ? " (you)" : ""}</div>
+            <div className="text-xs" style={{ color: C.soft }}>
+              {t.is_owner ? "Started this homeschool" : t.device_only ? "Joined with a code; no login yet" : "Co-teacher"}, since {new Date(t.joined).toLocaleDateString()}
+            </div>
+          </div>
+          {!deviceOnly && !t.is_me && !t.is_owner && (
+            <Button kind="danger" className="text-sm flex-shrink-0" onClick={() => (confirm === t.user_id ? remove(t) : setConfirm(t.user_id))}>{confirm === t.user_id ? "Confirm" : "Remove"}</Button>
+          )}
+        </div>
+      ))}
+      {invites.length > 0 && (
+        <p className="text-xs mt-2" style={{ color: C.soft }}>
+          {invites.length} unused co-teacher {invites.length === 1 ? "code" : "codes"}, good until {new Date(invites[invites.length - 1].expires_at).toLocaleDateString()}.{" "}
+          {!deviceOnly && <button className="underline" style={{ color: C.redpen }} onClick={cancelInvites}>Cancel unused codes</button>}
+        </p>
+      )}
+      {note && <p className="text-sm my-2" style={{ color: C.ink }}>{note}</p>}
+    </div>
+  );
+}
+
+function FamilyPanel({ membership, onSignOut, students = [], user }) {
+  const deviceOnly = !!user?.is_anonymous;
+  const [signOutWarn, setSignOutWarn] = useState(false);
   const [aiOn, setAiOn] = useState(null);
   useEffect(() => { supabase.rpc("can_use_ai").then(({ data }) => setAiOn(data === true)); }, []);
   const [codes, setCodes] = useState({});
@@ -256,7 +428,7 @@ function FamilyPanel({ membership, onSignOut, students = [] }) {
   async function makeCode(kind) {
     setBusy(kind); setNote("");
     const { data, error } = await supabase.rpc("new_join_code", { p_kind: kind });
-    if (error) setNote(friendly(error)); else setCodes((c) => ({ ...c, [kind]: data }));
+    if (error) setNote(friendly(error)); else { setCodes((c) => ({ ...c, [kind]: data })); if (kind === "teacher") window.dispatchEvent(new Event("hs-teachers-changed")); }
     setBusy("");
   }
   async function removeTablets() {
@@ -274,6 +446,10 @@ function FamilyPanel({ membership, onSignOut, students = [] }) {
     <div>
       <h3 className="text-lg font-bold mt-8 mb-1" style={{ color: C.ink }}>Devices and sign-in</h3>
       <p className="text-sm mb-3" style={{ color: C.soft }}>{membership.family_name}. Everything syncs between your devices automatically.</p>
+      <YourLogin user={user} />
+      {deviceOnly ? (
+        <p className="text-sm mb-4 leading-relaxed" style={{ color: C.ink }}>Codes for the kids' devices and for other teachers can be made by a teacher with a login. Once you create yours, they'll appear here.</p>
+      ) : (<>
       <div className="font-semibold mb-1" style={{ color: C.ink }}>Each child's own device</div>
       <p className="text-sm mb-2 leading-relaxed" style={{ color: C.ink }}>Make a code for a child, then on their iPad or phone open this site, tap <strong>Student tablet</strong>, and enter it. That device shows only that child: never a brother's or sister's work, grades, or photos.</p>
       <ChildDevices students={students} />
@@ -284,14 +460,21 @@ function FamilyPanel({ membership, onSignOut, students = [] }) {
         <Button kind="ghost" disabled={busy === "student"} onClick={() => makeCode("student")}>{codes.student ? "New code" : "Tablet code"}</Button>
         <Button kind="danger" onClick={() => (confirm ? removeTablets() : setConfirm(true))}>{confirm ? "Tap to confirm" : "Disconnect all"}</Button>
       </div>
-      <div className="font-semibold mt-4 mb-1" style={{ color: C.ink }}>Another teacher</div>
-      <p className="text-sm mb-2 leading-relaxed" style={{ color: C.ink }}>A co-teacher signs up with their own email on this site, then enters this code to share your homeschool.</p>
-      {codes.teacher && <CodeBox code={codes.teacher} help="Give this only to another adult. It grants full teacher access." />}
-      <Button kind="ghost" className="w-full mb-2" disabled={busy === "teacher"} onClick={() => makeCode("teacher")}>{codes.teacher ? "New co-teacher code" : "Co-teacher code"}</Button>
+      </>)}
+      <div className="font-semibold mt-4 mb-1" style={{ color: C.ink }}>Teachers</div>
+      <Teachers key={deviceOnly ? "device" : "full"} deviceOnly={deviceOnly} />
+      {!deviceOnly && (<>
+        <p className="text-sm mt-3 mb-2 leading-relaxed" style={{ color: C.ink }}>To add a co-teacher, make a code and give it to them. On this site they tap <strong>Sign in → Co-teacher</strong> and enter it. No account needed; they can create their own login later. Each code works once, within 7 days.</p>
+        {codes.teacher && <CodeBox code={codes.teacher} help="Give this only to another adult. It grants full teacher access. Works once, for 7 days." />}
+        <Button kind="ghost" className="w-full mb-2" disabled={busy === "teacher"} onClick={() => makeCode("teacher")}>{codes.teacher ? "Make another co-teacher code" : "Co-teacher code"}</Button>
+      </>)}
       {note && <p className="text-sm my-2" style={{ color: C.ink }}>{note}</p>}
       <CalendarLinks students={students} />
-      <p className="text-sm mt-6 mb-2" style={{ color: C.soft }}>AI tools: {!FEATURES.ai ? "off. They haven't been set up for this site yet." : aiOn === null ? "checking…" : aiOn ? "on" : `not turned on for this account yet${BRAND.beta ? " (beta)" : ""}.`}</p>
-      <Button kind="ghost" className="w-full" onClick={onSignOut}>Sign out of this device</Button>
+      <p className="text-sm mt-6 mb-2" style={{ color: C.soft }}>AI tools: {!FEATURES.ai ? "off. They haven't been set up for this site yet." : deviceOnly ? "available after you create your login." : aiOn === null ? "checking…" : aiOn ? "on" : `not turned on for this account yet${BRAND.beta ? " (beta)" : ""}.`}</p>
+      {signOutWarn && (
+        <p className="text-sm mb-2 leading-relaxed" style={{ color: C.redpen }}>You're signed in on this device only. If you sign out, you'll need a new co-teacher code to get back in. Create your login above first.</p>
+      )}
+      <Button kind={signOutWarn ? "danger" : "ghost"} className="w-full" onClick={() => (deviceOnly && !signOutWarn ? setSignOutWarn(true) : onSignOut())}>{signOutWarn ? "Sign out anyway" : "Sign out of this device"}</Button>
     </div>
   );
 }
@@ -310,6 +493,7 @@ function SyncBadge({ status }) {
 export default function AuthGate() {
   const [phase, setPhase] = useState(supabase ? "loading" : "config");
   const [membership, setMembership] = useState(null);
+  const [user, setUser] = useState(null);
   const [notice, setNotice] = useState(null);
   const [sync, setSync] = useState("saved");
   const [ready, setReady] = useState(false);
@@ -323,6 +507,7 @@ export default function AuthGate() {
   useEffect(() => { document.title = BRAND.name; }, []);
 
   async function loadMembership(session) {
+    setUser(session?.user || null);
     if (!session) { setPhase("signin"); return; }
     const { data, error } = await supabase.rpc("my_membership");
     // Can't reach the database right now: keep the device signed in and try again shortly
@@ -344,6 +529,7 @@ export default function AuthGate() {
     const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === "PASSWORD_RECOVERY") { setPhase("newpassword"); return; }
       if (event === "SIGNED_IN" || event === "SIGNED_OUT" || event === "USER_UPDATED") { current = session; loadMembership(session); }
+      else if (event === "TOKEN_REFRESHED") setUser(session?.user || null);
     });
     const again = () => supabase.auth.getSession().then(({ data }) => loadMembership(data.session));
     window.addEventListener("hs-membership-changed", again);
@@ -377,7 +563,7 @@ export default function AuthGate() {
   if (route === "privacy" || route === "terms") return <PolicyPage which={route} />;
   const signedOut = phase === "signin" || phase === "config" || phase === "loading";
   if (signedOut && route === "demo") return <Demo />;
-  if (signedOut && !["signin", "signup", "tablet"].includes(route) && !notice) return <Landing />;
+  if (signedOut && !["signin", "signup", "tablet", "coteacher"].includes(route) && !notice) return <Landing />;
 
   if (phase === "config") {
     return (
@@ -389,7 +575,7 @@ export default function AuthGate() {
   if (phase === "offline") return <Shell title={BRAND.name}><p style={{ color: C.soft }}>Can't reach the internet right now. Still signed in; trying again…</p></Shell>;
   if (phase === "loading") return <Shell title={BRAND.name}><p style={{ color: C.soft }}>Loading…</p></Shell>;
   if (phase === "newpassword") return <NewPassword onDone={() => supabase.auth.getSession().then(({ data }) => loadMembership(data.session))} />;
-  if (phase === "signin") return <SignIn key={(notice?.text || "") + route} notice={notice} initialTab={route === "tablet" ? "tablet" : "teacher"} initialMode={route === "signup" ? "signup" : "signin"} />;
+  if (phase === "signin") return <SignIn key={(notice?.text || "") + route} notice={notice} initialTab={route === "tablet" || route === "coteacher" ? route : "teacher"} initialMode={route === "signup" ? "signup" : "signin"} />;
   if (phase === "family") return <CreateFamily onDone={() => supabase.auth.getSession().then(({ data }) => loadMembership(data.session))} />;
   if (!ready) return <Shell title={BRAND.name}><p style={{ color: C.soft }}>Connecting…</p></Shell>;
   return (
@@ -398,9 +584,10 @@ export default function AuthGate() {
         key={membership.family_id}
         deviceRole={membership.role}
         studentId={membership.student_id || null}
-        extraSetup={membership.role === "teacher" ? (data) => <FamilyPanel membership={membership} onSignOut={signOut} students={data.students} /> : null}
+        extraSetup={membership.role === "teacher" ? (data) => <FamilyPanel membership={membership} onSignOut={signOut} students={data.students} user={user} /> : null}
       />
       <SyncBadge status={sync} />
+      {membership.role === "teacher" && !membership.student_id && <DeviceOnlyPill user={user} />}
     </>
   );
 }

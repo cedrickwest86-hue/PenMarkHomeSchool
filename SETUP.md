@@ -92,7 +92,10 @@ In the site, **Setup** → *Devices and sign-in* should now say **AI tools: on**
 2. Name your homeschool.
 3. **Bring over your data:** in the Claude version, **Setup** → **Back up**. In the new site, **Setup** → **Restore** and pick that file. Answer keys move into the teacher-only area automatically.
 4. **Each child's device:** **Setup** → *Devices and sign-in* → **Make code** next to a child. On that child's iPad or phone, open the site → **Student tablet** → enter the code. That device shows only that child. (A **Shared family tablet** code, where every child taps their name, is still available below it.)
-5. **Co-teacher (optional):** **Co-teacher code**. They create their own account on the site, then enter it.
+5. **Co-teacher (optional):** **Setup** → *Teachers* → **Co-teacher code**. On their phone or computer they open the site → **Sign in** → **Co-teacher** → enter the code. No account needed to start. Each code works once, within 7 days.
+   - Until they create a login (the yellow **Create my login** box in their Setup), they're "this device only": lessons, grading, and the calendar all work, but the AI tools and making device codes are off for them, and signing out or clearing the browser loses access.
+   - **Create my login:** they enter their email, open the confirmation link, then choose a password. Everything they've done stays. The link brings them back to your **Site URL** (Step 2, item 7), so make sure that's set.
+   - You can see every teacher and **Remove** a co-teacher under *Teachers*.
 
 ---
 
