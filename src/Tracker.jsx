@@ -389,6 +389,28 @@ async function shrinkImage(file, max = 2000) {
     return file;
   }
 }
+// Split a PDF into one small PDF per page, so long lesson plan books are read page by page
+async function splitPdf(file) {
+  try {
+    const { PDFDocument } = await import("pdf-lib");
+    const src = await PDFDocument.load(await file.arrayBuffer(), { ignoreEncryption: true });
+    const n = src.getPageCount();
+    if (n <= 1) return [file];
+    const base = file.name.replace(/\.pdf$/i, "");
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const doc = await PDFDocument.create();
+      const [pg] = await doc.copyPages(src, [i]);
+      doc.addPage(pg);
+      out.push(new File([await doc.save()], `${base} p${i + 1}.pdf`, { type: "application/pdf" }));
+    }
+    return out;
+  } catch {
+    return [file]; // couldn't split (damaged or locked PDF): send it whole
+  }
+}
+const MAX_PAGES = 40;
+
 const fileBlock = async (original, max = 2000) => {
   const file = original.type === "application/pdf" ? original : await shrinkImage(original, max);
   const data = await fileToBase64(file);
@@ -1024,55 +1046,93 @@ function PhotoImport({ students, onAdd, onMerge, flash, events = [], settings = 
   // A lesson already planned (e.g. "Language lesson 23") gets these page details instead of a duplicate
   const existingFor = (x) => (data?.assignments || []).find((a) => a.studentId === student.id && a.subject === x.subject && a.lesson && a.lesson === x.lesson && a.type === x.type && a.status !== "done");
 
-  function pick(e) {
-    const list = [...e.target.files].filter((f) => f.type === "application/pdf" || looksLikeImage(f)).slice(0, 12);
+  async function pick(e) {
+    const chosen = [...e.target.files].filter((f) => f.type === "application/pdf" || /\.pdf$/i.test(f.name) || looksLikeImage(f));
     e.target.value = "";
-    if (!list.length) { setError("Use photos or PDF files."); return; }
-    setFiles(list); setItems(null); setError("");
+    if (!chosen.length) { setError("Use photos or PDF files."); return; }
+    setError(""); setItems(null); setBusy("Opening files…");
+    let pages = [];
+    for (const f of chosen) {
+      const isPdf = f.type === "application/pdf" || /\.pdf$/i.test(f.name);
+      pages.push(...(isPdf ? await splitPdf(isPdf && !f.type ? new File([f], f.name, { type: "application/pdf" }) : f) : [f]));
+    }
+    if (pages.length > MAX_PAGES) {
+      setError(`That's ${pages.length} pages. The first ${MAX_PAGES} will be read; add the rest in a second batch.`);
+      pages = pages.slice(0, MAX_PAGES);
+    }
+    setFiles(pages); setBusy("");
   }
 
   async function read() {
-    setError(""); const all = [];
-    for (let p = 0; p < files.length; p++) {
-      setBusy(`Reading page ${p + 1} of ${files.length}…`);
-      try {
-        const block = await fileBlock(files[p]);
-        const ask = () => askClaudeFull([block, { type: "text", text: `This is a page from a homeschool resource (${SCHOOL.curriculum || "curriculum not specified"}) for a grade ${student.grade} student: most likely the Curriculum Lesson Plans (a teacher/parent book organized by numbered lessons), or a daily schedule, assignment sheet, or workbook page.
+    setError("");
+    const perPage = Array(files.length).fill(null);
+    const warnings = [];
+    let stop = null, done = 0, next = 0;
+    setBusy(`Reading page 1 of ${files.length}…`);
+    async function readPage(p) {
+      const block = await fileBlock(files[p]);
+      const ask = () => askClaudeFull([block, { type: "text", text: `This is a page from a homeschool resource (${SCHOOL.curriculum || "curriculum not specified"}) for a grade ${student.grade} student: most likely the Curriculum Lesson Plans (a teacher/parent book organized by numbered lessons), or a daily schedule, assignment sheet, or workbook page.
 The student's subjects are: ${student.subjects.join(", ")}.
-If it is an Abeka lesson plan, it is a table with three columns: the subject, "Preparation" (what the student works on and what to have ready), and "Procedure" (step-by-step directions for the teacher).
-Extract one item per subject row that has student work, including quizzes, tests, exams, book reports, seatwork, and homework, with their numbers (for example "Quiz 7" or "Test 3").
-Skip rows with only teacher notes and no student work (for example Classroom Routines, Reading Circle, or Activity Time before it begins). Skip anything cut off at the edge of the photo that you can't read.
+If it is an Abeka lesson plan, it is a table with three columns: the subject, "Preparation" (what the student works on and what to have ready), and "Procedure" (step-by-step directions for the teacher). A lesson often runs across several pages: a "Lesson N" banner starts it, and the next pages continue it without a banner (rows like "Reading (cont.)").
+Extract one item per subject row that has student work, including quizzes, tests, exams, book reports, seatwork, and homework, with their numbers (for example "Quiz 7" or "Test 3"). Also include rows marked "(cont.)" so their directions aren't lost.
+Skip rows with only teacher notes and no student work (for example Classroom Routines, Reading Circle, or Art/Activity Time notes before it begins). Skip anything cut off at the edge that you can't read.
 Respond with ONLY a JSON array, no prose:
-[{"subject": the closest match from the student's subjects, "lesson": the lesson number the row belongs to (from the "Lesson N" banner above it) as an integer, or null if none is shown, "type": one of ${JSON.stringify(TYPES)}, "title": a short plain description of the student's work with book and page, like "Phonics and Language 2 p. 3", "prep": the Preparation column for this row as plain text, one item per line, "procedure": the Procedure column for this row as plain text, one step per line (leave out "Play Video"), "day": 0-based index of the day within this page if it covers several days and shows no lesson numbers, otherwise 0}]
+[{"subject": the closest match from the student's subjects, "lesson": the number in the nearest "Lesson N" banner ABOVE this row on this page, as an integer, or null if no banner appears above it on this page, "continued": true if the row continues from the previous page (it is above any Lesson banner on this page, or is marked "(cont.)"), otherwise false, "type": one of ${JSON.stringify(TYPES)}, "title": a short plain description of the student's work with book and page, like "Arithmetic 5 pp. 1-2", "prep": the Preparation column for this row as plain text, one item per line, "procedure": the Procedure column for this row as plain text, one step per line (leave out "Play Video"), "day": 0-based index of the day within this page if it covers several days and shows no lesson numbers, otherwise 0}]
 Copy the wording faithfully; don't add anything that isn't on the page. If nothing on the page is an assignment, return [].` }], { max_tokens: 8000 });
-        let r;
-        try { r = await ask(); } catch (e1) { if (e1.setup || ![429, 500, 502, 529].includes(e1.status)) throw e1; await new Promise((ok) => setTimeout(ok, 4000)); r = await ask(); }
-        let parsed = parseItemsLoose(r.text);
-        if (!parsed) { r = await ask(); parsed = parseItemsLoose(r.text); } // one retry if the answer came back unusable
-        if (!parsed) { console.warn("Photo import: unreadable answer", r.text); throw new Error("unreadable"); }
-        if (r.stop === "max_tokens") setError(`Page ${p + 1} has a lot on it, so a few rows at the bottom may be missing. Check the list, or photograph the bottom half separately.`);
-        for (const x of Array.isArray(parsed) ? parsed : []) {
-          const subject = student.subjects.includes(x.subject) ? x.subject : matchSubject(x.subject, student.subjects) || student.subjects[0];
-          const item = {
-            page: p, subject,
-            lesson: Number.isInteger(x.lesson) && x.lesson > 0 ? x.lesson : null,
-            type: TYPES.includes(x.type) ? x.type : matchType(x.type),
-            title: String(x.title || "").slice(0, 200),
-            prep: String(x.prep || "").slice(0, 2000),
-            procedure: String(x.procedure || "").slice(0, 3000),
-            day: Number.isInteger(x.day) && x.day >= 0 ? x.day : 0,
-          };
-          item.pick = true;
-          all.push(item);
+      let r;
+      try { r = await ask(); } catch (e1) { if (e1.setup || ![429, 500, 502, 529].includes(e1.status)) throw e1; await new Promise((ok) => setTimeout(ok, 4000 + Math.random() * 3000)); r = await ask(); }
+      let parsed = parseItemsLoose(r.text);
+      if (!parsed) { r = await ask(); parsed = parseItemsLoose(r.text); } // one retry if the answer came back unusable
+      if (!parsed) { console.warn("Photo import: unreadable answer", r.text); throw new Error("unreadable"); }
+      if (r.stop === "max_tokens") warnings.push(`Page ${p + 1} has a lot on it, so a few rows at the bottom may be missing.`);
+      return parsed.map((x) => ({
+        page: p,
+        subject: student.subjects.includes(x.subject) ? x.subject : matchSubject(x.subject, student.subjects) || student.subjects[0],
+        lesson: Number.isInteger(x.lesson) && x.lesson > 0 ? x.lesson : null,
+        continued: x.continued === true,
+        type: TYPES.includes(x.type) ? x.type : matchType(x.type),
+        title: String(x.title || "").slice(0, 200),
+        prep: String(x.prep || "").slice(0, 2000),
+        procedure: String(x.procedure || "").slice(0, 3000),
+        day: Number.isInteger(x.day) && x.day >= 0 ? x.day : 0,
+      }));
+    }
+    async function worker() {
+      while (!stop && next < files.length) {
+        const p = next++;
+        try { perPage[p] = await readPage(p); }
+        catch (e) {
+          if (e?.setup || (e?.api && e.status !== 529)) { stop = stop || (e.setup ? e.message : `Page ${p + 1}: ${e.message}`); }
+          else warnings.push(e?.api || /HEIC|format this browser|internet/.test(e?.message || "") ? `Page ${p + 1}: ${e.message}` : `Page ${p + 1} came back in a form the app couldn't use. Try it again by itself.`);
         }
-      } catch (e) {
-        if (e?.setup) { setError(e.message); break; }
-        if (e?.api || /HEIC|format this browser|internet/.test(e?.message || "")) { setError(`Page ${p + 1}: ${e.message}`); if (e.api && e.status !== 529) break; continue; }
-        setError(`Page ${p + 1} came back in a form the app couldn't use. Try again, or crop the photo to just the lesson plan table.`);
+        done++;
+        setBusy(`Read ${done} of ${files.length} pages…`);
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(3, files.length) }, worker)); // three pages at a time
+
+    // Put pages back in order, give continuation rows the lesson they belong to, and join "(cont.)" rows to their lesson
+    const all = [];
+    let lastLesson = null;
+    for (let p = 0; p < files.length; p++) {
+      const rows = perPage[p] || [];
+      for (const x of rows) {
+        if (!x.lesson && (x.continued || lastLesson) && byLesson) x.lesson = lastLesson;
+        const same = x.continued && x.lesson ? all.find((y) => y.lesson === x.lesson && y.subject === x.subject) : null;
+        if (same) {
+          if (x.prep) same.prep = [same.prep, x.prep].filter(Boolean).join("\n").slice(0, 4000);
+          if (x.procedure) same.procedure = [same.procedure, x.procedure].filter(Boolean).join("\n").slice(0, 6000);
+          if (!same.pages.includes(p)) same.pages.push(p);
+        } else {
+          all.push({ ...x, pages: [p], pick: true });
+        }
+        if (x.lesson) lastLesson = x.lesson;
       }
     }
     setBusy("");
-    if (!all.length) setError((e) => e || "No assignments were found. Try clearer photos of the lesson plan pages.");
+    const msg = [stop, ...warnings].filter(Boolean);
+    if (msg.length) setError(msg.slice(0, 4).join(" ") + (msg.length > 4 ? ` (and ${msg.length - 4} more)` : ""));
+    if (!all.length && !stop) setError((e) => e || "No assignments were found. Try clearer photos of the lesson plan pages.");
     setItems(all);
   }
 
@@ -1082,7 +1142,7 @@ Copy the wording faithfully; don't add anything that isn't on the page. If nothi
     setBusy("Saving…");
     const pageAtt = {};
     if (keepCopy) {
-      for (const p of new Set(chosen.map((x) => x.page))) {
+      for (const p of new Set(chosen.flatMap((x) => x.pages || [x.page]))) {
         try { pageAtt[p] = await storeFile(files[p]); } catch (e) { flash(e.message); }
       }
     }
@@ -1090,7 +1150,7 @@ Copy the wording faithfully; don't add anything that isn't on the page. If nothi
     const adds = [], updates = [];
     for (const x of chosen) {
       const ex = existingFor(x);
-      const att = pageAtt[x.page] ? [pageAtt[x.page]] : [];
+      const att = (x.pages || [x.page]).map((p) => pageAtt[p]).filter(Boolean);
       const plan = { ...(x.prep ? { prep: x.prep } : {}), ...(x.procedure ? { procedure: x.procedure } : {}) };
       if (ex) updates.push({ id: ex.id, title: x.title || ex.title, ...plan, attachments: [...(ex.attachments || []), ...att] });
       else adds.push({ id: uid(), studentId: student.id, subject: x.subject, lesson: x.lesson, type: x.type, title: x.title, ...plan, due: dateFor(x), status: "todo", score: null, notes: "", attachments: att, createdAt: now });
@@ -1106,7 +1166,7 @@ Copy the wording faithfully; don't add anything that isn't on the page. If nothi
   return (
     <div>
       <p className="mb-4 leading-relaxed" style={{ color: C.ink }}>
-        Photograph pages from your lesson plan book (Abeka Curriculum Lesson Plans, a teacher guide, a schedule, or any assignment page), up to 12 at a time. Each assignment is placed on the school day that matches its lesson number, and lessons you've already planned get the page details filled in.
+        Photograph pages from your lesson plan book (Abeka Curriculum Lesson Plans, a teacher guide, a schedule, or any assignment page), or choose a scanned PDF. Up to 40 pages at a time; PDFs are split into pages for you. Each assignment is placed on the school day that matches its lesson number, and lessons you've already planned get the page details filled in.
       </p>
       <div className="grid grid-cols-2 gap-3">
         <Field label="Student">
@@ -1160,7 +1220,7 @@ Copy the wording faithfully; don't add anything that isn't on the page. If nothi
                     </select>
                   </div>
                   <div className="text-sm" style={{ color: ex ? "#2F7D4F" : C.soft }}>
-                    {ex ? `Fills in ${ex.title} (${fmtDate(ex.due)})` : `${fmtDate(dateFor(x))}${files.length > 1 ? `, page ${x.page + 1}` : ""}`}
+                    {ex ? `Fills in ${ex.title} (${fmtDate(ex.due)})` : `${x.lesson ? `Lesson ${x.lesson}, ` : ""}${fmtDate(dateFor(x))}${files.length > 1 ? `, page ${(x.pages || [x.page]).map((p) => p + 1).join(" & ")}` : ""}`}
                   </div>
                 </div>
               </div>
