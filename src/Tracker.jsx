@@ -1077,7 +1077,7 @@ If it is an Abeka lesson plan, it is a table with three columns: the subject, "P
 Extract one item per subject row that has student work, including quizzes, tests, exams, book reports, seatwork, and homework, with their numbers (for example "Quiz 7" or "Test 3"). Also include rows marked "(cont.)" so their directions aren't lost.
 Skip rows with only teacher notes and no student work (for example Classroom Routines, Reading Circle, or Art/Activity Time notes before it begins). Skip anything cut off at the edge that you can't read.
 Respond with ONLY a JSON array, no prose:
-[{"subject": the closest match from the student's subjects, "lesson": the number in the nearest "Lesson N" banner ABOVE this row on this page, as an integer, or null if no banner appears above it on this page, "continued": true if the row continues from the previous page (it is above any Lesson banner on this page, or is marked "(cont.)"), otherwise false, "type": one of ${JSON.stringify(TYPES)}, "title": a short plain description of the student's work with book and page, like "Arithmetic 5 pp. 1-2", "prep": the Preparation column for this row as plain text, one item per line, "procedure": the Procedure column for this row as plain text, one step per line (leave out "Play Video"), "day": 0-based index of the day within this page if it covers several days and shows no lesson numbers, otherwise 0}]
+[{"subject": the matching subject from the student's list (for example "Phonics Review" belongs to a phonics subject); if the row is clearly a subject that isn't on the list, its name as printed, "lesson": the number in the nearest "Lesson N" banner ABOVE this row on this page, as an integer, or null if no banner appears above it on this page, "continued": true if the row continues from the previous page (it is above any Lesson banner on this page, or is marked "(cont.)"), otherwise false, "type": one of ${JSON.stringify(TYPES)}, "title": a short plain description of the student's work with book and page, like "Arithmetic 5 pp. 1-2", "prep": the Preparation column for this row as plain text, one item per line, "procedure": the Procedure column for this row as plain text, one step per line (leave out "Play Video"), "day": 0-based index of the day within this page if it covers several days and shows no lesson numbers, otherwise 0}]
 Copy the wording faithfully; don't add anything that isn't on the page. If nothing on the page is an assignment, return [].` }], { max_tokens: 8000 });
       let r;
       try { r = await ask(); } catch (e1) { if (e1.setup || ![429, 500, 502, 529].includes(e1.status)) throw e1; await new Promise((ok) => setTimeout(ok, 4000 + Math.random() * 3000)); r = await ask(); }
@@ -1087,7 +1087,7 @@ Copy the wording faithfully; don't add anything that isn't on the page. If nothi
       if (r.stop === "max_tokens") warnings.push(`Page ${p + 1} has a lot on it, so a few rows at the bottom may be missing.`);
       return parsed.map((x) => ({
         page: p,
-        subject: student.subjects.includes(x.subject) ? x.subject : matchSubject(x.subject, student.subjects) || student.subjects[0],
+        subject: student.subjects.includes(x.subject) ? x.subject : matchSubject(x.subject, student.subjects) || cleanSubject(x.subject) || student.subjects[0],
         lesson: Number.isInteger(x.lesson) && x.lesson > 0 ? x.lesson : null,
         continued: x.continued === true,
         type: TYPES.includes(x.type) ? x.type : matchType(x.type),
@@ -1155,7 +1155,8 @@ Copy the wording faithfully; don't add anything that isn't on the page. If nothi
       if (ex) updates.push({ id: ex.id, title: x.title || ex.title, ...plan, attachments: [...(ex.attachments || []), ...att] });
       else adds.push({ id: uid(), studentId: student.id, subject: x.subject, lesson: x.lesson, type: x.type, title: x.title, ...plan, due: dateFor(x), status: "todo", score: null, notes: "", attachments: att, createdAt: now });
     }
-    onMerge(adds, updates);
+    const fresh = [...new Set(chosen.map((x) => x.subject).filter((x) => !student.subjects.includes(x)))];
+    onMerge(adds, updates, fresh.length ? { [student.id]: fresh } : {});
     setBusy(""); setItems(null); setFiles([]);
   }
 
@@ -1211,9 +1212,7 @@ Copy the wording faithfully; don't add anything that isn't on the page. If nothi
                 <div className="flex-1 space-y-2 min-w-0">
                   <input className={inputCls} style={inputStyle} value={x.title} onChange={(e) => upd(i, "title", e.target.value)} aria-label="Assignment" />
                   <div className="grid grid-cols-3 gap-2">
-                    <select className={inputCls} style={inputStyle} value={x.subject} onChange={(e) => upd(i, "subject", e.target.value)} aria-label="Subject">
-                      {student.subjects.map((s) => <option key={s}>{s}</option>)}
-                    </select>
+                    <SubjectSelect value={x.subject} subjects={student.subjects} onChange={(v) => upd(i, "subject", v)} />
                     <input type="number" placeholder="Lesson" className={inputCls} style={inputStyle} value={x.lesson ?? ""} onChange={(e) => upd(i, "lesson", e.target.value === "" ? null : Number(e.target.value))} aria-label="Lesson number" />
                     <select className={inputCls} style={inputStyle} value={x.type} onChange={(e) => upd(i, "type", e.target.value)} aria-label="Type">
                       {TYPES.map((t) => <option key={t}>{t}</option>)}
@@ -1427,13 +1426,22 @@ function SheetImport({ students, settings, onSettings, onAdd, flash, events }) {
     setRaw(null); setRows(null); setSource("");
   }
   const toggle = (i) => setRows((p) => p.map((r, n) => (n === i ? { ...r, pick: !r.pick } : r)));
+  // Changing one row's subject changes every row that had the same subject from the file
+  const setSubjectFor = (i, v) => setRows((p) => {
+    const was = p[i].subject;
+    return p.map((r) => {
+      if (r.studentId !== p[i].studentId || r.subject !== was) return r;
+      const known = (students.find((x) => x.id === r.studentId)?.subjects || []).includes(v);
+      return { ...r, subject: v, newSubject: !known, warn: r.warn.filter((w) => !/new subject/.test(w)).concat(known ? [] : [`Adds “${v}” as a new subject`]) };
+    });
+  });
   const count = rows ? rows.filter((r) => r.pick).length : 0;
   const multi = rows && new Set(rows.map((r) => r.studentId)).size > 1;
 
   return (
     <div>
       <p className="mb-4 leading-relaxed" style={{ color: C.ink }}>
-        Import a whole grading period from Excel or a CSV file. Abeka numbers every lesson 1–170 in each subject, and lesson 1 is day 1, so a lesson number is all it takes to put work on the right day.
+        Import a whole grading period from Excel or a CSV file, including your own lesson plans. Each row needs a Subject and a Lesson number (or a Date); lesson 1 is day 1, so a lesson number is all it takes to put work on the right day. Subjects that aren't on your list yet are added for you.
       </p>
       <div className="grid grid-cols-2 gap-3">
         <Field label="Student (if the file has no Student column)">
@@ -1471,8 +1479,13 @@ function SheetImport({ students, settings, onSettings, onAdd, flash, events }) {
                 <input type="checkbox" checked={r.pick} disabled={!r.subject} onChange={() => toggle(i)} className="mt-1 w-5 h-5 flex-shrink-0" />
                 <div className="flex-1 min-w-0">
                   <div className="font-semibold leading-snug" style={{ color: C.ink }}>{r.title || `${r.subject || "?"} lesson ${r.lesson ?? "?"}`}</div>
-                  <div className="text-sm flex flex-wrap gap-x-3" style={{ color: C.soft }}>
-                    {r.subject && <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full" style={{ background: dotColor(r.subject) }} />{r.subject}</span>}
+                  <div className="text-sm flex flex-wrap items-center gap-x-3 gap-y-1" style={{ color: C.soft }}>
+                    {r.subject && (
+                      <span className="inline-flex items-center gap-1" onClick={(e) => e.preventDefault()}>
+                        <span className="w-2 h-2 rounded-full" style={{ background: dotColor(r.subject) }} />
+                        <SubjectSelect compact value={r.subject} subjects={students.find((x) => x.id === r.studentId)?.subjects || []} onChange={(v) => setSubjectFor(i, v)} />
+                      </span>
+                    )}
                     {r.lesson && <span>Lesson {r.lesson}</span>}
                     <span>{r.type}</span>
                     <span>{fmtDate(r.due)}</span>
@@ -1723,6 +1736,79 @@ function PlanLessons({ data, students, onAdd, onReplace, onUpdateStudent }) {
   );
 }
 
+// Subject picker for import review rows: the student's subjects, plus a new one from the file, plus "New subject…"
+function SubjectSelect({ value, subjects, onChange, compact = false }) {
+  const opts = subjects.includes(value) || !value ? subjects : [value, ...subjects];
+  return (
+    <select className={compact ? "rounded border px-1 py-0.5 text-sm" : inputCls} style={compact ? { borderColor: C.rule, color: C.ink, background: C.white } : inputStyle}
+      value={value} aria-label="Subject"
+      onChange={(e) => {
+        if (e.target.value !== "__new") return onChange(e.target.value);
+        const n = cleanSubject(window.prompt("Name of the new subject") || "");
+        if (n) onChange(n);
+      }}>
+      {opts.map((x) => <option key={x} value={x}>{subjects.includes(x) ? x : `${x} (new)`}</option>)}
+      <option value="__new">New subject…</option>
+    </select>
+  );
+}
+
+/* ---------- the teacher's own subjects, shown at the top of Import ---------- */
+const cleanSubject = (x) => String(x || "").replace(/\s+/g, " ").trim().slice(0, 40);
+function SubjectsPanel({ students, onSubjects }) {
+  const [sid, setSid] = useState(students[0]?.id || "");
+  const [name, setName] = useState("");
+  const [everyone, setEveryone] = useState(false);
+  const [confirm, setConfirm] = useState("");
+  const student = students.find((x) => x.id === sid) || students[0];
+  if (!student) return null;
+  function add(e) {
+    e.preventDefault();
+    const n = cleanSubject(name);
+    if (!n) return;
+    onSubjects(everyone ? students.map((x) => x.id) : [student.id], { add: [n] });
+    setName("");
+  }
+  return (
+    <details className="mb-5 rounded-xl px-4 py-3" style={{ background: C.white, border: `1px solid ${C.rule}` }}>
+      <summary className="cursor-pointer font-semibold" style={{ color: C.ink }}>
+        Subjects <span className="font-normal text-sm" style={{ color: C.soft }}>· add your own (co-op, piano, Spanish…)</span>
+      </summary>
+      <div className="mt-3">
+        {students.length > 1 && (
+          <div className="flex flex-wrap gap-2 mb-3">
+            {students.map((x) => (
+              <button key={x.id} type="button" aria-pressed={x.id === student.id} onClick={() => { setSid(x.id); setConfirm(""); }}
+                className="rounded-full px-3 py-1 text-sm font-semibold focus:outline-none focus:ring-2"
+                style={x.id === student.id ? { background: C.ink, color: C.white } : { background: C.white, color: C.ink, border: `1.5px solid ${C.ink}` }}>{x.name}</button>
+            ))}
+          </div>
+        )}
+        <div className="flex flex-wrap gap-2 mb-3">
+          {student.subjects.map((sub) => (
+            <span key={sub} className="inline-flex items-center gap-1 rounded-full pl-3 pr-1 py-1 text-sm" style={{ background: "#F3F7FC", color: C.ink }}>
+              <span className="w-2 h-2 rounded-full" style={{ background: dotColor(sub) }} />{sub}
+              <button type="button" aria-label={`Remove ${sub}`} className="px-1.5 rounded-full focus:outline-none focus:ring-2" style={{ color: confirm === sub ? C.redpen : C.soft }}
+                onClick={() => (confirm === sub ? (onSubjects([student.id], { remove: [sub] }), setConfirm("")) : setConfirm(sub))}>{confirm === sub ? "Remove?" : "×"}</button>
+            </span>
+          ))}
+        </div>
+        {confirm && <p className="text-xs mb-2" style={{ color: C.soft }}>Removing a subject keeps any assignments already in it. Tap "Remove?" to confirm.</p>}
+        <form onSubmit={add} className="flex gap-2">
+          <input className={inputCls} style={inputStyle} placeholder="New subject, like Piano" value={name} onChange={(e) => setName(e.target.value)} aria-label="New subject" />
+          <Btn disabled={!cleanSubject(name)}>Add</Btn>
+        </form>
+        {students.length > 1 && (
+          <label className="flex items-center gap-2 mt-2 text-sm" style={{ color: C.ink }}>
+            <input type="checkbox" className="w-5 h-5" checked={everyone} onChange={(e) => setEveryone(e.target.checked)} />Add it for every student
+          </label>
+        )}
+        <p className="text-xs mt-2" style={{ color: C.soft }}>Spreadsheets and photos can use these subjects. A subject in your file that isn't on the list is added for you when you import.</p>
+      </div>
+    </details>
+  );
+}
+
 function ImportView(props) {
   const ownMode = useState("plan");
   const [mode, setMode] = props.sub || ownMode;
@@ -1730,6 +1816,7 @@ function ImportView(props) {
   const events = props.data.events || [];
   return (
     <div>
+      <SubjectsPanel students={props.students} onSubjects={props.onSubjects} />
       <div className="grid grid-cols-3 mb-5 rounded-lg overflow-hidden" style={{ border: `1.5px solid ${C.ink}` }} role="tablist">
         {modes.map(([id, label, Icon]) => (
           <button key={id} role="tab" aria-selected={mode === id} onClick={() => setMode(id)}
@@ -3722,9 +3809,11 @@ export default function HomeschoolTracker({ deviceRole = "teacher", studentId = 
     flash(`Added ${list.length} assignments`); setTab("calendar");
   };
   const updateSettings = (s) => setData((p) => ({ ...p, settings: { ...p.settings, ...s } }));
-  const mergeItems = (adds, updates) => {
+  const mergeItems = (adds, updates, newSubjects = {}) => {
     const byId = Object.fromEntries(updates.map((u) => [u.id, u]));
-    setData((p) => ({ ...p, assignments: [...p.assignments.map((a) => (byId[a.id] ? { ...a, ...byId[a.id] } : a)), ...adds] }));
+    setData((p) => ({ ...p,
+      students: p.students.map((st) => (newSubjects[st.id] ? { ...st, subjects: [...st.subjects, ...newSubjects[st.id].filter((x) => !st.subjects.includes(x))] } : st)),
+      assignments: [...p.assignments.map((a) => (byId[a.id] ? { ...a, ...byId[a.id] } : a)), ...adds] }));
     flash([adds.length && `Added ${adds.length}`, updates.length && `updated ${updates.length}`].filter(Boolean).join(", ") || "Nothing to add");
     setTab("calendar");
   };
@@ -3748,6 +3837,12 @@ export default function HomeschoolTracker({ deviceRole = "teacher", studentId = 
     setData((p) => { cleanupFiles(p.assignments, d.assignments || []); return { readingLog: [], checklist: {}, attendance: {}, assignments: [], ...d }; });
     setActive("all"); setRole(d.settings?.pin ? null : "teacher"); flash("Backup restored");
   };
+  const editSubjects = (sids, { add = [], remove = [] }) => setData((p) => ({
+    ...p,
+    students: p.students.map((st) => (sids.includes(st.id)
+      ? { ...st, subjects: [...st.subjects.filter((x) => !remove.includes(x)), ...add.filter((x) => !st.subjects.some((y) => y.toLowerCase() === x.toLowerCase()))] }
+      : st)),
+  }));
   const saveStudent = (s) => setData((p) => ({ ...p, students: p.students.some((x) => x.id === s.id) ? p.students.map((x) => (x.id === s.id ? s : x)) : [...p.students, s] }));
   const removeStudent = (sid) => {
     setData((p) => {
@@ -3870,7 +3965,7 @@ export default function HomeschoolTracker({ deviceRole = "teacher", studentId = 
         {tab === "today" && <TodayView data={data} activeStudents={activeStudents} day={day} setDay={setDay} onToggle={toggle} onEdit={setEditing} onAttend={attend} onNew={newAssignment} onShift={() => setShifting(true)} onAddEvent={newEvent} onEditEvent={setEventEditing} onPrint={setPrinting} />}
         {tab === "calendar" && <CalendarTab data={data} activeStudents={activeStudents} onToggle={toggle} onEdit={setEditing} onNew={newAssignment}
           onAddEvent={newEvent} onEditEvent={setEventEditing} onOpenDay={(d) => { setDay(d); setTab("today"); }} onSync={FEATURES.gcal ? () => setSyncing(true) : undefined} onPrint={setPrinting} onDeleteMany={deleteMany} onDoneMany={doneMany} sub={calSub} />}
-        {tab === "import" && <ImportView sub={importSub} data={data} onMerge={mergeItems} onReplace={replaceSubject} onUpdateStudent={saveStudent} students={activeStudents.length ? activeStudents : data.students} settings={data.settings} onSettings={updateSettings} onAdd={addMany} flash={flash} />}
+        {tab === "import" && <ImportView sub={importSub} data={data} onSubjects={editSubjects} onMerge={mergeItems} onReplace={replaceSubject} onUpdateStudent={saveStudent} students={activeStudents.length ? activeStudents : data.students} settings={data.settings} onSettings={updateSettings} onAdd={addMany} flash={flash} />}
         {tab === "progress" && <RecordsView sub={recordsSub} data={data} activeStudents={activeStudents} onCheck={setCheck} onAddReading={addReading} onRemoveReading={removeReading} flash={flash}
           onAdd={(list) => { setData((p) => ({ ...p, assignments: [...p.assignments, ...list] })); flash(list.length === 1 ? "Passage assigned" : `Assigned to ${list.length} students`); }}
           onToggle={toggle} onEdit={setEditing} onSaveTranscript={saveTranscript} />}
