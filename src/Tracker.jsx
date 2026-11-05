@@ -681,6 +681,7 @@ function Editor({ initial, students, allAssignments, onSave, onDelete, onClose, 
   const [gradeErr, setGradeErr] = useState("");
   const student = students.find((s) => s.id === a.studentId);
   const subjects = student ? student.subjects : [];
+  const [typingSubject, setTypingSubject] = useState(false);
   const set = (k, v) => setA((p) => ({ ...p, [k]: v }));
   const isNew = !initial.createdAt;
   const matches = allAssignments.filter((x) => x.id !== a.id && x.subject === a.subject && a.lesson && x.lesson === a.lesson && x.type === a.type && !(x.keyAttachments || []).length);
@@ -716,9 +717,20 @@ function Editor({ initial, students, allAssignments, onSave, onDelete, onClose, 
       </Field>
       <div className="grid grid-cols-2 gap-3">
         <Field label="Subject">
-          <select className={inputCls} style={inputStyle} value={a.subject} onChange={(e) => set("subject", e.target.value)}>
-            {subjects.map((s) => <option key={s}>{s}</option>)}
-          </select>
+          {typingSubject ? (
+            <div className="flex gap-1">
+              <input autoFocus className={inputCls} style={inputStyle} placeholder="New subject" value={a.subject}
+                onChange={(e) => set("subject", e.target.value.slice(0, 40))} aria-label="New subject name" />
+              <button type="button" className="px-2 text-sm underline" style={{ color: C.soft }} onClick={() => { setTypingSubject(false); set("subject", subjects[0] || ""); }}>Cancel</button>
+            </div>
+          ) : (
+            <select className={inputCls} style={inputStyle} value={a.subject}
+              onChange={(e) => (e.target.value === "__new" ? (setTypingSubject(true), set("subject", "")) : set("subject", e.target.value))}>
+              {(subjects.includes(a.subject) || !a.subject ? subjects : [a.subject, ...subjects]).map((s) => <option key={s}>{s}</option>)}
+              <option value="__new">+ New subject…</option>
+            </select>
+          )}
+          {typingSubject && <span className="block text-xs mt-1" style={{ color: C.soft }}>Added to {student?.name}'s subjects when you save.</span>}
         </Field>
         <Field label="Type">
           <select className={inputCls} style={inputStyle} value={a.type} onChange={(e) => set("type", e.target.value)}>
@@ -3741,8 +3753,15 @@ export default function HomeschoolTracker({ deviceRole = "teacher", studentId = 
 
   const stamp = (a) => (a.status === "todo" ? { ...a, finishedOn: null } : a.finishedOn ? a : { ...a, finishedOn: todayISO() });
   const saveAssignment = (raw, shareKeyIds = []) => {
-    const a = stamp(raw);
+    const a = stamp({ ...raw, subject: String(raw.subject || "").replace(/\s+/g, " ").trim() || "General" });
     setData((p) => {
+      // A subject typed in the editor joins that student's subject list
+      const st = p.students.find((x) => x.id === a.studentId);
+      if (st && !st.subjects.includes(a.subject)) {
+        const same = st.subjects.find((x) => x.toLowerCase() === a.subject.toLowerCase());
+        if (same) a.subject = same;
+        else p = { ...p, students: p.students.map((x) => (x.id === st.id ? { ...x, subjects: [...x.subjects, a.subject] } : x)) };
+      }
       const exists = p.assignments.some((x) => x.id === a.id);
       let next = exists ? p.assignments.map((x) => (x.id === a.id ? a : x)) : [...p.assignments, { ...a, createdAt: Date.now() }];
       if (shareKeyIds.length) next = next.map((x) => (shareKeyIds.includes(x.id) ? { ...x, keyAttachments: a.keyAttachments } : x));
