@@ -13,3 +13,20 @@ keep_vars = true
 #   SUPABASE_URL        Text     https://YOUR-PROJECT.supabase.co
 #   SUPABASE_ANON_KEY   Text     your anon / publishable key
 #   MODEL               Text     claude-sonnet-5-5 (optional; this is the default)
+#
+# Billing, admin, and email (see SETUP.md, "Selling it"):
+#   SUPABASE_SERVICE_KEY      Secret   Supabase → Project Settings → API Keys → secret / service_role key
+#   STRIPE_SECRET_KEY         Secret   Stripe → Developers → API keys → Secret key
+#   STRIPE_WEBHOOK_SECRET     Secret   Stripe → Developers → Webhooks → your endpoint → Signing secret
+#   PRICE_ESSENTIALS_MONTHLY  Text     price_... (Stripe → Product catalog → Essentials → monthly price ID)
+#   PRICE_ESSENTIALS_YEARLY   Text     price_...
+#   PRICE_PLUS_MONTHLY        Text     price_...
+#   PRICE_PLUS_YEARLY         Text     price_...
+#   SITE_URL                  Text     https://YOUR-SITE/ (used in reminder emails)
+#   RESEND_API_KEY            Secret   optional: sends trial, deletion, and contact-form emails
+#   EMAIL_FROM                Text     optional: e.g. West Homeschool <help@yourdomain.com>
+#   ADMIN_EMAIL               Text     optional: where contact-form messages are emailed
+
+# Every day: reminder emails, and deleting accounts that have been closed more than 12 months
+[triggers]
+crons = ["17 11 * * *"]

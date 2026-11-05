@@ -16,6 +16,24 @@ export const supabase = CONFIG.supabaseUrl && CONFIG.supabaseAnonKey
 let demoMode = false;
 export const setDemoMode = (on) => { demoMode = on; };
 
+// Billing and the contact form also go through the worker
+export async function workerFetch(path, body = {}) {
+  if (demoMode) throw new Error("This works in your own account, not in the demo.");
+  if (!CONFIG.aiUrl || !supabase) throw new Error("Billing isn't set up on this site yet.");
+  const { data } = await supabase.auth.getSession();
+  let res;
+  try {
+    res = await fetch(CONFIG.aiUrl.replace(/\/$/, "") + path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${data.session?.access_token || ""}` },
+      body: JSON.stringify(body),
+    });
+  } catch { throw new Error("Couldn't connect. Check your internet and try again."); }
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok || j.error) throw new Error(j.error?.message || "Something went wrong. Try again.");
+  return j;
+}
+
 // AI requests go to your Cloudflare Worker, which holds the Anthropic key and only serves teachers.
 export async function aiFetch(init = {}) {
   if (demoMode) {

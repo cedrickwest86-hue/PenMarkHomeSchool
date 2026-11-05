@@ -3,7 +3,9 @@ import { useEffect, useRef, useState } from "react";
 import { supabase, FEATURES } from "./platform.js";
 import { createSupabaseStorage, createChildStorage, confirmedRemoved } from "./sync.js";
 import CalendarLinks from "./CalendarLinks.jsx";
-import HomeschoolTracker from "./Tracker.jsx";
+import HomeschoolTracker, { DATA_KEY } from "./Tracker.jsx";
+import { AccountBanner, BillingSheet, BillingPanel, LockedScreen, HelpContact, installErrorReporting, useAccount } from "./Account.jsx";
+import AdminPortal from "./Admin.jsx";
 import { BRAND } from "./brand.js";
 import Landing, { Demo, PolicyPage } from "./Landing.jsx";
 
@@ -416,7 +418,7 @@ function Teachers({ deviceOnly }) {
   );
 }
 
-function FamilyPanel({ membership, onSignOut, students = [], user }) {
+function FamilyPanel({ membership, onSignOut, students = [], user, account }) {
   const deviceOnly = !!user?.is_anonymous;
   const [signOutWarn, setSignOutWarn] = useState(false);
   const [aiOn, setAiOn] = useState(null);
@@ -447,6 +449,12 @@ function FamilyPanel({ membership, onSignOut, students = [], user }) {
       <h3 className="text-lg font-bold mt-8 mb-1" style={{ color: C.ink }}>Devices and sign-in</h3>
       <p className="text-sm mb-3" style={{ color: C.soft }}>{membership.family_name}. Everything syncs between your devices automatically.</p>
       <YourLogin user={user} />
+      {account?.status && (
+        <div className="mb-5">
+          <div className="font-semibold mb-1" style={{ color: C.ink }}>Your plan</div>
+          <BillingPanel account={account} />
+        </div>
+      )}
       {deviceOnly ? (
         <p className="text-sm mb-4 leading-relaxed" style={{ color: C.ink }}>Codes for the kids' devices and for other teachers can be made by a teacher with a login. Once you create yours, they'll appear here.</p>
       ) : (<>
@@ -471,6 +479,13 @@ function FamilyPanel({ membership, onSignOut, students = [], user }) {
       {note && <p className="text-sm my-2" style={{ color: C.ink }}>{note}</p>}
       <CalendarLinks students={students} />
       <p className="text-sm mt-6 mb-2" style={{ color: C.soft }}>AI tools: {!FEATURES.ai ? "off. They haven't been set up for this site yet." : deviceOnly ? "available after you create your login." : aiOn === null ? "checking…" : aiOn ? "on" : `not turned on for this account yet${BRAND.beta ? " (beta)" : ""}.`}</p>
+      {!deviceOnly && account?.status && (
+        <details className="mb-4">
+          <summary className="cursor-pointer font-semibold" style={{ color: C.ink }}>Help and contact</summary>
+          <div className="mt-2"><HelpContact /></div>
+        </details>
+      )}
+      {account?.is_admin && <a href="#/admin" className="block mb-4 underline font-semibold" style={{ color: C.ink }}>Open the admin portal</a>}
       {signOutWarn && (
         <p className="text-sm mb-2 leading-relaxed" style={{ color: C.redpen }}>You're signed in on this device only. If you sign out, you'll need a new co-teacher code to get back in. Create your login above first.</p>
       )}
@@ -481,11 +496,12 @@ function FamilyPanel({ membership, onSignOut, students = [], user }) {
 
 function SyncBadge({ status }) {
   if (status === "saved") return null;
-  const offline = status === "offline";
+  const err = status.startsWith("error:") ? status.slice(6) : "";
+  const bad = status === "offline" || !!err;
   return (
-    <div className="fixed z-50 rounded-full px-3 py-1 text-xs font-semibold" role="status"
-      style={{ left: 8, bottom: 76, background: offline ? "#FDF1F0" : C.white, color: offline ? C.redpen : C.soft, border: `1px solid ${offline ? C.redpen : C.rule}` }}>
-      {offline ? "Offline. Your changes will save when you're back online." : "Saving…"}
+    <div className="fixed z-50 rounded-2xl px-3 py-1 text-xs font-semibold" role="status"
+      style={{ left: 8, bottom: 76, maxWidth: "calc(100vw - 16px)", background: bad ? "#FDF1F0" : C.white, color: bad ? C.redpen : C.soft, border: `1px solid ${bad ? C.redpen : C.rule}` }}>
+      {err ? `Not saved: ${err}. It will keep trying; if this stays, tell your teacher.` : status === "offline" ? "Offline. Your changes will save when you're back online." : "Saving…"}
     </div>
   );
 }
@@ -499,6 +515,22 @@ export default function AuthGate() {
   const [ready, setReady] = useState(false);
   const [route, setRoute] = useState(readRoute());
   const storageRef = useRef(null);
+  const [account, reloadAccount] = useAccount(phase === "ready");
+  const [billingOpen, setBillingOpen] = useState(false);
+  const [thanks, setThanks] = useState(false);
+  useEffect(() => { installErrorReporting(); }, []);
+  // Teachers' visits feed the admin portal's "last active" column
+  useEffect(() => { if (phase === "ready" && membership?.role === "teacher") supabase.rpc("touch_seen").then(() => {}, () => {}); }, [phase, membership?.family_id]);
+  // Coming back from Stripe: open the plan sheet and check until the payment shows up
+  useEffect(() => {
+    if (phase !== "ready" || route !== "billing") return;
+    setBillingOpen(true);
+    if (!/done=1/.test(window.location.hash)) return;
+    setThanks(true);
+    let n = 0;
+    const t = setInterval(() => { reloadAccount(); if (++n >= 10) clearInterval(t); }, 3000);
+    return () => clearInterval(t);
+  }, [phase, route]);
   useEffect(() => {
     const f = () => setRoute(readRoute());
     window.addEventListener("hashchange", f);
@@ -536,10 +568,12 @@ export default function AuthGate() {
     return () => { sub.subscription.unsubscribe(); window.removeEventListener("hs-membership-changed", again); };
   }, []);
 
-  // Connect the tracker's storage to this family's database
+  // Connect the tracker's storage to this family's database.
+  // Read-only accounts (plan ended, 10-day window) can look and download, but changes aren't saved.
+  const access = account?.access;
   useEffect(() => {
-    if (phase !== "ready" || !membership) return;
-    const storage = (membership.student_id ? createChildStorage : createSupabaseStorage)({
+    if (phase !== "ready" || !membership || !access || access === "locked") return;
+    const live = (membership.student_id ? createChildStorage : createSupabaseStorage)({
       supabase, familyId: membership.family_id, onStatus: setSync,
       onLostAccess: async () => {
         storageRef.current?.dispose(); window.storage = undefined; setReady(false);
@@ -548,11 +582,28 @@ export default function AuthGate() {
         window.location.hash = "#/tablet";
       },
     });
+    const storage = access === "readonly"
+      ? { ...live, async set(key, value) { return { key, value }; }, async delete(key) { return { key, deleted: true }; } }
+      : live;
     storageRef.current = storage;
     window.storage = storage;
     setReady(true);
-    return () => { storage.dispose(); if (window.storage === storage) window.storage = undefined; setReady(false); };
-  }, [phase, membership?.family_id]);
+    return () => { live.dispose(); if (window.storage === storage) window.storage = undefined; setReady(false); };
+  }, [phase, membership?.family_id, access]);
+
+  async function downloadRecords() {
+    try {
+      const r = await window.storage?.get(DATA_KEY);
+      const blob = new Blob([r?.value || "{}"], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `${(membership?.family_name || "homeschool").replace(/[^A-Za-z0-9]+/g, "-")}-records-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+      alert("Your records file was downloaded. Keep it somewhere safe: it can be restored in Setup → Restore. To print report cards, transcripts, and your portfolio, open Records.");
+    } catch { alert("The download didn't work. Check your connection and try again."); }
+  }
+  const closeBilling = () => { setBillingOpen(false); setThanks(false); if (route === "billing") window.location.hash = "#/"; };
 
   async function signOut() {
     await storageRef.current?.flushAll();
@@ -577,14 +628,24 @@ export default function AuthGate() {
   if (phase === "newpassword") return <NewPassword onDone={() => supabase.auth.getSession().then(({ data }) => loadMembership(data.session))} />;
   if (phase === "signin") return <SignIn key={(notice?.text || "") + route} notice={notice} initialTab={route === "tablet" || route === "coteacher" ? route : "teacher"} initialMode={route === "signup" ? "signup" : "signin"} />;
   if (phase === "family") return <CreateFamily onDone={() => supabase.auth.getSession().then(({ data }) => loadMembership(data.session))} />;
+  if (route === "admin" && account?.is_admin) return <AdminPortal onExit={() => { window.location.hash = "#/"; }} />;
+  if (account?.access === "locked") {
+    if (membership.student_id || membership.role === "student") {
+      return <Shell title={BRAND.name}><Card><p style={{ color: C.ink }}>School is paused right now. Ask your teacher.</p></Card></Shell>;
+    }
+    return <LockedScreen account={account} onSignOut={signOut} />;
+  }
   if (!ready) return <Shell title={BRAND.name}><p style={{ color: C.soft }}>Connecting…</p></Shell>;
+  const isTeacher = membership.role === "teacher" && !membership.student_id;
   return (
     <>
+      <AccountBanner account={account} isTeacher={isTeacher} onOpenBilling={() => setBillingOpen(true)} onDownload={downloadRecords} />
+      {billingOpen && isTeacher && <BillingSheet account={account} thanks={thanks} onClose={closeBilling} />}
       <HomeschoolTracker
         key={membership.family_id}
         deviceRole={membership.role}
         studentId={membership.student_id || null}
-        extraSetup={membership.role === "teacher" ? (data) => <FamilyPanel membership={membership} onSignOut={signOut} students={data.students} user={user} /> : null}
+        extraSetup={membership.role === "teacher" ? (data) => <FamilyPanel membership={membership} onSignOut={signOut} students={data.students} user={user} account={account} /> : null}
       />
       <SyncBadge status={sync} />
       {membership.role === "teacher" && !membership.student_id && <DeviceOnlyPill user={user} />}

@@ -154,7 +154,11 @@ const EVENT_KINDS = {
 const kindColor = (k) => (EVENT_KINDS[k] || EVENT_KINDS.Other).color;
 function eventDates(ev) {
   const out = [];
-  if (ev.repeatWeekly) {
+  if (ev.repeatWeekly && Array.isArray(ev.days) && ev.days.length) {
+    // Activities on several weekdays (e.g. swim on Tuesday and Thursday)
+    const until = ev.until || addDays(ev.date, 7 * 40);
+    for (let d = ev.date, i = 0; d <= until && i < 400; d = addDays(d, 1), i++) if (ev.days.includes(new Date(d + "T12:00:00").getDay())) out.push(d);
+  } else if (ev.repeatWeekly) {
     const until = ev.until || addDays(ev.date, 7 * 40);
     for (let d = ev.date, i = 0; d <= until && i < 60; d = addDays(d, 7), i++) out.push(d);
   } else {
@@ -894,7 +898,7 @@ function TodayView({ data, activeStudents, day, setDay, onToggle, onEdit, onAtte
         <button aria-label="Next day" onClick={() => setDay(addDays(day, 1))} className="p-2 rounded focus:outline-none focus:ring-2"><ChevronRight color={C.ink} /></button>
       </div>
 
-      {eventsOn(data.events, day, activeStudents.map((s) => s.id)).map((ev) => <EventLine key={ev.id} ev={ev} students={data.students} onClick={() => onEditEvent(ev)} />)}
+      {eventsOn(data.events, day, activeStudents.map((s) => s.id)).map((ev) => <EventLine key={ev.id} ev={ev} day={day} students={data.students} onClick={() => onEditEvent(ev)} />)}
       {activeStudents.map((s) => {
         const items = data.assignments.filter((a) => a.studentId === s.id && a.due === day);
         const attended = attendanceDays(data, s.id, "9999").includes(day);
@@ -920,7 +924,7 @@ function TodayView({ data, activeStudents, day, setDay, onToggle, onEdit, onAtte
 
       <div className="grid grid-cols-2 gap-3">
         <Btn kind="ghost" onClick={() => onNew(day)}><Plus size={18} />Add assignment</Btn>
-        <Btn kind="ghost" onClick={() => onAddEvent(day)}><CalendarDays size={18} />Add event</Btn>
+        <Btn kind="ghost" onClick={() => onAddEvent(day)}><CalendarDays size={18} />Event or activity</Btn>
         <Btn kind="ghost" onClick={onShift}><ChevronRight size={18} />Shift schedule</Btn>
         <Btn kind="ghost" onClick={() => onPrint(day)}><Download size={18} />Checklist</Btn>
       </div>
@@ -2180,7 +2184,7 @@ function StudentApp({ data, student, onToggle, onAttach, onSwitch, flash, onAddR
               {items.length ? (left ? `${left} left to do. Tap the circle when you finish one.` : "All turned in. Nice work!") : ""}
             </p>
             {noLessons && <p className="mb-2 rounded-lg p-3 text-center font-semibold" style={{ background: "#EAF5EE", color: "#2F7D4F" }}>No lessons today: {noLessons.title}</p>}
-            {todayEvents.map((ev) => <EventLine key={ev.id} ev={ev} students={data.students} />)}
+            {todayEvents.map((ev) => <EventLine key={ev.id} ev={ev} day={day} students={data.students} />)}
             {items.length ? items.map(row) : !noLessons && <Empty>Nothing assigned for this day.</Empty>}
             {earlier.length > 0 && (
               <section className="mt-8">
@@ -2650,17 +2654,32 @@ function monthCells(ym) {
   const start = addDays(first, -new Date(first + "T12:00:00").getDay());
   return Array.from({ length: 42 }, (_, i) => addDays(start, i));
 }
-function EventLine({ ev, students, onClick }) {
+const REMIND_OPTIONS = [["none", "No reminder"], ["0", "At the start time"], ["15", "15 minutes before"], ["30", "30 minutes before"], ["60", "1 hour before"], ["120", "2 hours before"], ["eve", "The evening before (6 p.m.)"], ["morning", "That morning (7:30 a.m.)"]];
+// "in 40 min" / "now" for today's activities that are coming up soon
+function soonLabel(ev, day) {
+  if (!ev.time || day !== todayISO()) return "";
+  const [h, m] = ev.time.split(":").map(Number);
+  const now = new Date(); const mins = h * 60 + m - (now.getHours() * 60 + now.getMinutes());
+  if (mins < -(Number(ev.minutes) || 60)) return "";
+  if (mins <= 0) return "Now";
+  if (mins <= 180) return mins < 60 ? `In ${mins} min` : `In ${Math.floor(mins / 60)} hr ${mins % 60 ? `${mins % 60} min` : ""}`.trim();
+  return "";
+}
+function EventLine({ ev, students, onClick, day }) {
   const who = ev.studentIds?.length ? ev.studentIds.map((id) => students.find((s) => s.id === id)?.name).filter(Boolean).join(", ") : "Everyone";
   const time = ev.time ? new Date(`2000-01-01T${ev.time}`).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) : "";
+  const soon = soonLabel(ev, day);
   const Tag = onClick ? "button" : "div";
   return (
     <Tag onClick={onClick} className="w-full text-left flex gap-3 py-2 border-b focus:outline-none focus:ring-2 rounded" style={{ borderColor: C.rule }}>
       <span className="w-1.5 rounded-full flex-shrink-0" style={{ background: kindColor(ev.kind) }} />
       <span className="flex-1 min-w-0">
-        <span className="block font-semibold" style={{ color: C.ink }}>{ev.title}</span>
+        <span className="flex items-center gap-2 font-semibold" style={{ color: C.ink }}>
+          {ev.title}
+          {soon && <span className="text-xs font-bold rounded-full px-2 py-0.5" style={{ background: C.pencil, color: C.ink }}>{soon}</span>}
+        </span>
         <span className="block text-sm" style={{ color: C.soft }}>
-          {[time, ev.kind, who, ev.noLessons && "No lessons", ev.minutes && `${ev.minutes} min`].filter(Boolean).join(", ")}
+          {[time, ev.kind, who, ev.place, ev.noLessons && "No lessons", ev.minutes && `${ev.minutes} min`].filter(Boolean).join(", ")}
         </span>
         {ev.notes && <span className="block text-sm" style={{ color: C.ink }}>{ev.notes}</span>}
       </span>
@@ -2741,7 +2760,7 @@ function MonthView({ data, sids, mode = "teacher", renderRow, onAddEvent, onEdit
       <p className="text-xs mt-2" style={{ color: C.soft }}>Gray days have no lessons. A red dot marks a quiz, test, or deadline.</p>
 
       <div className="flex flex-wrap gap-2 mt-4">
-        {mode === "teacher" && <Btn kind="ghost" onClick={() => onAddEvent(sel)}><Plus size={18} />Add event</Btn>}
+        {mode === "teacher" && <Btn kind="ghost" onClick={() => onAddEvent(sel)}><Plus size={18} />Event or activity</Btn>}
         {mode === "teacher" && <Btn kind="ghost" onClick={() => onOpenDay(sel)}><CalendarDays size={18} />Open this day</Btn>}
         {mode === "teacher" && onSync && <Btn kind="ghost" onClick={onSync}><Upload size={18} />Google Calendar</Btn>}
         {mode === "teacher" && onPrint && <Btn kind="ghost" onClick={() => onPrint(sel)}><Download size={18} />Checklist</Btn>}
@@ -2749,7 +2768,7 @@ function MonthView({ data, sids, mode = "teacher", renderRow, onAddEvent, onEdit
 
       <section className="mt-5">
         <h3 className="text-lg font-bold mb-1" style={{ color: C.ink }}>{fmtDate(sel, true)}</h3>
-        {dayEvents.map((ev) => <EventLine key={ev.id} ev={ev} students={data.students} onClick={mode === "teacher" ? () => onEditEvent(ev) : undefined} />)}
+        {dayEvents.map((ev) => <EventLine key={ev.id} ev={ev} day={sel} students={data.students} onClick={mode === "teacher" ? () => onEditEvent(ev) : undefined} />)}
         {dayWork.map((a) => (
           <div key={a.id}>
             {a.dueBy === sel && a.due !== sel && <div className="text-xs pt-2 font-semibold" style={{ color: C.redpen }}>Due today, started {fmtDate(a.due)}</div>}
@@ -2801,10 +2820,26 @@ function EventSheet({ initial, data, onSave, onDelete, onClose }) {
         <Field label="Time (optional)"><input type="time" className={inputCls} style={inputStyle} value={ev.time || ""} onChange={(e) => set("time", e.target.value)} /></Field>
       </div>
       <label className="flex items-center gap-2 mb-3" style={{ color: C.ink }}>
-        <input type="checkbox" className="w-5 h-5" checked={!!ev.repeatWeekly} onChange={(e) => set("repeatWeekly", e.target.checked)} />Repeats every week
+        <input type="checkbox" className="w-5 h-5" checked={!!ev.repeatWeekly}
+          onChange={(e) => setEv((p) => ({ ...p, repeatWeekly: e.target.checked, days: e.target.checked ? (p.days?.length ? p.days : [new Date((p.date || todayISO()) + "T12:00:00").getDay()]) : p.days }))} />Repeats every week
       </label>
       {ev.repeatWeekly ? (
-        <Field label="Last week it happens"><input type="date" className={inputCls} style={inputStyle} min={ev.date} value={ev.until || ""} onChange={(e) => set("until", e.target.value)} /></Field>
+        <>
+          <div className="mb-3">
+            <div className="text-sm mb-1" style={{ color: C.soft }}>On these days</div>
+            <div className="flex flex-wrap gap-1" role="group" aria-label="Days of the week">
+              {[[0, "Sun"], [1, "Mon"], [2, "Tue"], [3, "Wed"], [4, "Thu"], [5, "Fri"], [6, "Sat"]].map(([n, l]) => {
+                const on = (ev.days || []).includes(n);
+                return (
+                  <button key={n} type="button" aria-pressed={on} className="rounded-lg px-2.5 py-1.5 text-sm font-semibold focus:outline-none focus:ring-2"
+                    style={on ? { background: C.ink, color: C.white } : { background: C.white, color: C.ink, border: "1px solid #C3D3EA" }}
+                    onClick={() => { const cur = ev.days || []; const next = on ? cur.filter((x) => x !== n) : [...cur, n].sort(); if (next.length) set("days", next); }}>{l}</button>
+                );
+              })}
+            </div>
+          </div>
+          <Field label="Last week it happens"><input type="date" className={inputCls} style={inputStyle} min={ev.date} value={ev.until || ""} onChange={(e) => set("until", e.target.value)} /></Field>
+        </>
       ) : (
         <Field label="Last day (for trips longer than one day)"><input type="date" className={inputCls} style={inputStyle} min={ev.date} value={ev.endDate || ""} onChange={(e) => set("endDate", e.target.value || null)} /></Field>
       )}
@@ -2838,10 +2873,19 @@ function EventSheet({ initial, data, onSave, onDelete, onClose }) {
           <input list="event-subjects" className={inputCls} style={inputStyle} placeholder="e.g. Physical Education" value={ev.subject || ""} onChange={(e) => set("subject", e.target.value)} />
           <datalist id="event-subjects">{subjects.map((s) => <option key={s} value={s} />)}</datalist>
         </Field>
-        <Field label="Minutes each time (optional)">
+        <Field label="How long, in minutes (optional)">
           <input type="number" min="0" inputMode="numeric" className={inputCls} style={inputStyle} value={ev.minutes || ""} onChange={(e) => set("minutes", e.target.value === "" ? null : Number(e.target.value))} />
         </Field>
       </div>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Where (optional)"><input className={inputCls} style={inputStyle} placeholder="e.g. YMCA pool" value={ev.place || ""} onChange={(e) => set("place", e.target.value)} /></Field>
+        <Field label="Remind me">
+          <select className={inputCls} style={inputStyle} value={ev.remind ?? (ev.time ? "30" : "eve")} onChange={(e) => set("remind", e.target.value)}>
+            {REMIND_OPTIONS.filter(([k]) => ev.time || !["0", "15", "30", "60", "120"].includes(k)).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+          </select>
+        </Field>
+      </div>
+      <p className="text-xs -mt-2 mb-3" style={{ color: C.soft }}>Reminders come through the calendar app on your phone or your child's tablet. Turn it on once in Setup → Calendar on your devices.</p>
       <Field label="Notes"><input className={inputCls} style={inputStyle} value={ev.notes || ""} onChange={(e) => set("notes", e.target.value)} /></Field>
       {preview > 0 && (
         <label className="flex items-start gap-2 mb-3 rounded-lg p-3" style={{ color: C.ink, background: "#FFF6D6" }}>

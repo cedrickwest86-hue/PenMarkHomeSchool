@@ -82,9 +82,9 @@ The site works at this point, without the AI tools. You can sign in and start (s
 1. GitHub: **Settings** → **Secrets and variables** → **Actions** → **Variables** → add `AI_URL` = the worker address.
 2. **Actions** → **Deploy site** → **Run workflow**.
 
-3. **Turn AI on for your family.** New families start with AI off so people who sign up can't use your Anthropic key. In Supabase: **Table Editor** → `families` → your row → set `ai_enabled` to **true** → **Save**.
+3. **Who gets AI.** After you run the billing update (see "Selling it" below), AI follows each family's plan: Plus plans and free trials have it, within a monthly limit. Your own family and beta testers become free accounts; in the **admin portal → Families**, use **Make free (Plus)** to give a family AI. (Before the billing update, this was the `ai_enabled` switch in the `families` table.)
 
-In the site, **Setup** → *Devices and sign-in* should now say **AI tools: on**. To give a beta family AI access later, flip their `ai_enabled` the same way.
+In the site, **Setup** → *Devices and sign-in* should now say **AI tools: on**.
 
 ## Step 7. First use
 
@@ -141,3 +141,85 @@ Good to know:
 - **Backups:** **Setup** → **Back up** each grading period. Keep the file somewhere safe and never upload it to GitHub.
 - **Changing the AI model:** edit `MODEL` in the Cloudflare worker's settings. Nothing else changes.
 - **Not in this version yet:** Google Calendar sync.
+
+---
+
+## Selling it: plans, billing, and the admin portal
+
+Do these in order. Use Stripe's **Test mode** first (toggle at the top of the Stripe dashboard); switch to live mode only after the test checklist at the end passes.
+
+### 1. Supabase
+1. **SQL Editor → New query**, paste `supabase/migrations/20261106000000_billing_admin.sql`, **Run**.
+   - Every family that already exists (yours and your beta testers) becomes a **free ("comp") account**: Plus if you had turned AI on for them, Essentials otherwise. New sign-ups get a 14-day free trial.
+2. Make yourself an admin. In a new query, with the email you sign in with:
+   ```sql
+   insert into public.admins (user_id) select id from auth.users where email = 'YOUR-LOGIN-EMAIL';
+   ```
+   Then in the app, **Setup → Devices and sign-in → Open the admin portal** (or go to `#/admin`).
+3. **Project Settings → API Keys**: copy the **secret** key (older projects call it `service_role`). It goes only into Cloudflare (step 3), never into GitHub or the site.
+4. When you launch: **Organization → Billing → upgrade to Pro** ($25/month).
+
+### 2. Stripe
+1. Create an account at stripe.com (use your business details).
+2. **Product catalog → Add product**, twice:
+   - **Essentials**: a recurring price of **$7.99 monthly**, and another of **$75 yearly**.
+   - **Plus**: **$12.99 monthly** and **$119 yearly**.
+   Copy each price's ID (starts with `price_`). If you choose different prices, also change them in `src/brand.js` so the app shows the same numbers.
+3. **Settings → Billing → Customer portal**: turn on *Cancel subscriptions* (choose **at the end of the billing period**), *Switch plans* (add both products and all four prices), *Update payment methods*, and *Invoice history*. Save.
+4. **Developers → Webhooks → Add endpoint**:
+   - URL: `https://YOUR-WORKER.workers.dev/stripe/webhook`
+   - Events: `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`
+   - After saving, copy the **Signing secret** (starts with `whsec_`).
+5. **Developers → API keys**: copy the **Secret key** (`sk_test_…` in test mode, `sk_live_…` in live mode).
+6. Optional: **Product catalog → Coupons** to give beta families a founding-family discount; checkout accepts promotion codes.
+
+### 3. Cloudflare worker settings
+Worker → **Settings → Variables and Secrets → Add**. Secrets are marked **Secret**; the rest are **Text**.
+
+| Name | Type | Value |
+|---|---|---|
+| `SUPABASE_SERVICE_KEY` | Secret | the Supabase secret key from step 1.3 |
+| `STRIPE_SECRET_KEY` | Secret | from step 2.5 |
+| `STRIPE_WEBHOOK_SECRET` | Secret | from step 2.4 |
+| `PRICE_ESSENTIALS_MONTHLY` | Text | `price_…` |
+| `PRICE_ESSENTIALS_YEARLY` | Text | `price_…` |
+| `PRICE_PLUS_MONTHLY` | Text | `price_…` |
+| `PRICE_PLUS_YEARLY` | Text | `price_…` |
+| `SITE_URL` | Text | your site's address, e.g. `https://cedrickwest86-hue.github.io/PenMarkHomeSchool/` |
+
+The worker also runs once a day on its own (set in `wrangler.toml`): it sends reminder emails and permanently deletes accounts that have been closed for more than 12 months, including their photos.
+
+### 4. Email (recommended before launch)
+Supabase's built-in email only sends a few messages an hour, which isn't enough once families sign up. Use **Resend** (free for 3,000 emails a month):
+1. Sign up at resend.com, add and verify your domain, and create an API key.
+2. **Supabase → Authentication → Emails → SMTP Settings**: turn on custom SMTP. Host `smtp.resend.com`, port `465`, username `resend`, password = your Resend API key, sender = e.g. `help@yourdomain.com`.
+3. Add to the Cloudflare worker: `RESEND_API_KEY` (Secret), `EMAIL_FROM` (Text, e.g. `West Homeschool <help@yourdomain.com>`), and `ADMIN_EMAIL` (Text, where contact-form messages go). This turns on trial-ending reminders, the 30-day "your records will be deleted" warning, and emailing you each contact-form message.
+
+### 5. Turn off "beta"
+In `src/brand.js`, set `beta: false` and fill in `contactEmail` and `company`. The home page then shows the two plans side by side with the free-trial button.
+
+### How cancellation works (what families see)
+- **Free trial**: 14 days with every Plus feature, no card. Choosing a plan during the trial doesn't charge until the trial ends.
+- **Cancel** (Setup → Your plan → *Change plan, update card, or cancel*, which opens Stripe's billing page): they keep full access until the end of the time they paid for.
+- Then **10 days read-only**: they can look at everything, **Download my records** (a backup file they can restore later), and print report cards and transcripts from Records. Changes aren't saved.
+- Then **paused**: signing in shows "Your homeschool is paused" with the plans. Kids' devices show "School is paused." Calendar links stop.
+- Records are kept **12 months** after the read-only window, with an email warning 30 days before deletion. Choosing a plan any time before that brings everything back exactly as it was.
+- A trial that ends without a plan follows the same read-only → paused → 12-month path.
+
+### Admin portal (`#/admin`)
+- **Overview**: paying families by plan, estimated monthly revenue, AI cost this month, an estimated net, trials ending soon, past-due payments, new messages, and app errors.
+- **Families**: search, see each family's plan, status, last visit, children and devices, and AI use. Extend a trial, make a family free (your family, beta testers), block AI, or change a family's monthly AI limit. Refunds and paid-plan changes are done in Stripe.
+- **Messages**: what families sent from *Setup → Help and contact*, with a *Reply by email* button.
+- **Errors**: problems the app ran into on families' devices, grouped so repeated bugs stand out.
+- It never shows a family's lessons, grades, or files.
+
+### AI limits
+Plus includes about **$6 of AI a month** per family (roughly 150 lesson-plan pages); trials get $1.50. When a family reaches the limit, AI tools say so until the 1st of the next month. You can raise one family's limit in the admin portal. The defaults are in `ai_cap()` in the SQL file.
+
+### Test checklist (Stripe test mode)
+1. Sign up as a new family in a private browser window: you should see the free trial in **Setup → Your plan**.
+2. Choose **Plus, Yearly**. Pay with test card `4242 4242 4242 4242`, any future date, any CVC. You return to the app with "Thank you! Your plan is active."
+3. In the admin portal, that family shows **active · plus**.
+4. **Change plan, update card, or cancel** → cancel. Setup shows "canceled; full access until …".
+5. In Stripe (test mode), open that subscription → **Cancel immediately**. The app turns read-only with the red banner; **Download my records** works.
+6. Admin portal → that family → it shows read-only and its deletion date. Choose a plan again: everything comes back.

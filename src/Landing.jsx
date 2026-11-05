@@ -1,6 +1,7 @@
 // Public home page, live demo, and policy pages. The "pictures" are the real app screens,
 // rendered with a sample family, so they always match what customers actually get.
 import { useEffect, useMemo, useRef, useState } from "react";
+import { PlanCompare, CANCEL_POLICY } from "./Account.jsx";
 import { BRAND } from "./brand.js";
 import { makeDemoData } from "./demoData.js";
 import HomeschoolTracker, { TodayView, MonthView, StudentApp, Compliance, ProgressView, Row, todayISO, reportCardHTML } from "./Tracker.jsx";
@@ -230,15 +231,26 @@ function HowItWorks() {
 }
 
 function Pricing() {
+  if (!BRAND.beta) {
+    return (
+      <section id="pricing" className="max-w-3xl mx-auto px-6 py-16">
+        <h2 className="text-3xl md:text-4xl font-bold mb-2 text-center" style={{ color: C.ink }}>Simple pricing, one price per family</h2>
+        <p className="text-center mb-6" style={{ color: C.soft }}>Start with a {BRAND.trialDays}-day free trial with every Plus feature. No card needed.</p>
+        <PlanCompare showButtons={false} />
+        <div className="text-center mt-6"><button onClick={() => go("signup")} className="rounded-lg px-6 py-3 font-bold text-lg" style={{ background: C.ink, color: C.white }}>Start your free trial</button></div>
+        <p className="text-xs mt-4 leading-relaxed text-center" style={{ color: C.soft }}>{CANCEL_POLICY}</p>
+      </section>
+    );
+  }
   return (
     <section id="pricing" className="max-w-3xl mx-auto px-6 py-16 text-center">
-      <h2 className="text-3xl md:text-4xl font-bold mb-4" style={{ color: C.ink }}>{BRAND.beta ? "Free during the beta" : "Pricing"}</h2>
+      <h2 className="text-3xl md:text-4xl font-bold mb-4" style={{ color: C.ink }}>Free during the beta</h2>
       <div className="rounded-2xl p-8" style={{ background: C.white, border: `2px solid ${C.ink}`, boxShadow: `6px 6px 0 ${C.pencil}` }}>
         <p className="text-lg leading-relaxed mb-6" style={{ color: C.ink }}>{BRAND.betaPricing}</p>
         <ul className="text-left inline-block mb-6 space-y-2" style={{ color: C.ink }}>
           {["Unlimited children", "Teacher and student views", "Calendar, planning, and automatic rescheduling", "Grading, reports, portfolios, and transcripts", "State requirement tracking for all 50 states and DC"].map((x) => <li key={x}>✓ {x}</li>)}
         </ul>
-        <div><button onClick={() => go("signup")} className="rounded-lg px-6 py-3 font-bold text-lg" style={{ background: C.ink, color: C.white }}>{BRAND.beta ? "Join the free beta" : "Start free"}</button></div>
+        <div><button onClick={() => go("signup")} className="rounded-lg px-6 py-3 font-bold text-lg" style={{ background: C.ink, color: C.white }}>Join the free beta</button></div>
       </div>
     </section>
   );

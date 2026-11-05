@@ -79,19 +79,33 @@ export async function confirmedRemoved(supabase) {
   return check();
 }
 
+// Was this a network problem (try again later) or did the server refuse the save (a real error to show and report)?
+function serverError(e) {
+  const msg = String(e?.message || e || "");
+  if (!msg || /failed to fetch|network|load failed|timeout|offline|aborted|jwt expired/i.test(msg)) return "";
+  return msg.replace(/^(READ_ONLY|LOCKED):\s*/, "");
+}
+function reportOnce(seen, where, e) {
+  const msg = serverError(e);
+  if (!msg || seen.has(msg)) return;
+  seen.add(msg);
+  try { window.hsReportError?.(`${where}: ${msg}`, e?.stack || JSON.stringify(e)); } catch {}
+}
+
 export function createSupabaseStorage({ supabase, familyId, onStatus = () => {}, onLostAccess = () => {} }) {
   const synced = {};      // key -> { value, version } last agreed with the server
   const pending = {};     // key -> newest local value not yet saved
   const listeners = {};   // key -> Set(fn) told about values that came from elsewhere
   const timers = {};
   let flushing = {};
-  let failures = 0;
+  let failures = 0, lastError = "";
+  const reported = new Set();
 
   const fileTarget = (key) => {
     const prefix = Object.keys(FILE_PREFIXES).find((p) => key.startsWith(p));
     return prefix ? `${familyId}/${FILE_PREFIXES[prefix]}/${key.replace(/[^A-Za-z0-9_-]/g, "_")}.json` : null;
   };
-  const status = () => onStatus(Object.keys(pending).length || Object.values(flushing).some(Boolean) ? (failures ? "offline" : "saving") : "saved");
+  const status = () => onStatus(Object.keys(pending).length || Object.values(flushing).some(Boolean) ? (failures ? (lastError ? `error:${lastError}` : "offline") : "saving") : "saved");
   const notify = (key, value) => (listeners[key] || new Set()).forEach((fn) => { try { fn(value); } catch {} });
 
   async function fetchRow(key) {
@@ -123,9 +137,11 @@ export function createSupabaseStorage({ supabase, familyId, onStatus = () => {},
         pending[key] = merged;
         notify(key, merged);
       }
-      failures = 0;
+      failures = 0; lastError = "";
     } catch (e) {
       failures++;
+      lastError = serverError(e);
+      reportOnce(reported, "Saving", e);
       clearTimeout(timers[key]);
       timers[key] = setTimeout(() => flush(key), Math.min(30000, 2000 * failures));
     } finally {
@@ -225,9 +241,10 @@ export function createChildStorage({ supabase, familyId, onStatus = () => {}, on
   const listeners = new Set();
   let last = null;       // canonical form of what the app and database last agreed on
   let pending = null;    // newest data from the app not yet saved
-  let timer = null, saving = false, failures = 0;
+  let timer = null, saving = false, failures = 0, lastError = "";
+  const reported = new Set();
   const notify = (obj) => { const s = JSON.stringify(obj); listeners.forEach((fn) => { try { fn(s); } catch {} }); };
-  const status = () => onStatus(pending ? (failures ? "offline" : "saving") : "saved");
+  const status = () => onStatus(pending ? (failures ? (lastError ? `error:${lastError}` : "offline") : "saving") : "saved");
 
   async function save() {
     if (saving || !pending) return;
@@ -237,11 +254,13 @@ export function createChildStorage({ supabase, familyId, onStatus = () => {}, on
       const { data, error } = await supabase.rpc("student_save", { p: sent });
       if (error) throw error;
       if (pending === sent) pending = null;
-      failures = 0;
+      failures = 0; lastError = "";
       const c = canonical(data);
       if (c !== canonical(sent)) { last = c; if (!pending) notify(data); } else last = c;
-    } catch {
+    } catch (e) {
       failures++;
+      lastError = serverError(e);
+      reportOnce(reported, "Child device save", e);
       clearTimeout(timer); timer = setTimeout(save, Math.min(30000, 2000 * failures));
     } finally { saving = false; status(); }
   }
