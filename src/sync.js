@@ -82,8 +82,13 @@ export async function confirmedRemoved(supabase) {
 // Was this a network problem (try again later) or did the server refuse the save (a real error to show and report)?
 function serverError(e) {
   const msg = String(e?.message || e || "");
-  if (!msg || /failed to fetch|network|load failed|timeout|offline|aborted|jwt expired/i.test(msg)) return "";
+  if (/statement timeout|canceling statement/i.test(msg)) return "the server took too long to save";
+  if (!msg || /failed to fetch|network|load failed|offline|aborted|jwt expired|invalid jwt/i.test(msg)) return "";
   return msg.replace(/^(READ_ONLY|LOCKED):\s*/, "");
+}
+// An expired sign-in looks like being offline; refresh it so the next try goes through
+function refreshIfExpired(supabase, e) {
+  if (/jwt expired|invalid jwt|401/i.test(`${e?.message || ""} ${e?.code || ""} ${e?.status || ""}`)) supabase.auth.refreshSession().catch(() => {});
 }
 function reportOnce(seen, where, e) {
   const msg = serverError(e);
@@ -141,6 +146,7 @@ export function createSupabaseStorage({ supabase, familyId, onStatus = () => {},
     } catch (e) {
       failures++;
       lastError = serverError(e);
+      refreshIfExpired(supabase, e);
       reportOnce(reported, "Saving", e);
       clearTimeout(timers[key]);
       timers[key] = setTimeout(() => flush(key), Math.min(30000, 2000 * failures));
@@ -260,6 +266,7 @@ export function createChildStorage({ supabase, familyId, onStatus = () => {}, on
     } catch (e) {
       failures++;
       lastError = serverError(e);
+      refreshIfExpired(supabase, e);
       reportOnce(reported, "Child device save", e);
       clearTimeout(timer); timer = setTimeout(save, Math.min(30000, 2000 * failures));
     } finally { saving = false; status(); }
